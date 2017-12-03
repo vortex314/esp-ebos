@@ -1,3 +1,9 @@
 [submodule "components/esp-mqtt"]
 	path = components/esp-mqtt
 	url = https://github.com/256dpi/esp-mqtt.git
+[submodule "components/Common"]
+	path = components/Common
+	url = https://github.com/vortex314/Common
+[submodule "components/Ebos"]
+	path = components/Ebos
+	url = https://github.com/vortex314/Ebos
