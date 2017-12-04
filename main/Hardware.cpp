@@ -11,7 +11,7 @@ DigitalIn::DigitalIn(uint32_t pin) : _gpio(pin) {}
 
 Erc DigitalIn::init() {
   esp_err_t erc;
-  INFO(" DigitaLin Init %d ", _gpio);
+  INFO(" DigitalIn Init %d ", _gpio);
   erc = gpio_set_direction((gpio_num_t)_gpio, GPIO_MODE_INPUT);
   if (erc) ERROR("gpio_set_direction():%d", erc);
   // interrupt of rising edge
@@ -52,7 +52,7 @@ Erc DigitalIn::onChange(PinChange pinChange, FunctionPointer fp, void* object) {
 DigitalOut::DigitalOut(uint32_t pin) : _gpio(pin) {}
 
 Erc DigitalOut::init() {
-  INFO(" DigitaLin Init %d ", _gpio);
+  INFO(" DigitalOut Init %d ", _gpio);
   esp_err_t erc = gpio_set_direction((gpio_num_t)_gpio, GPIO_MODE_OUTPUT);
   if (erc) ERROR("gpio_set_direction():%d", erc);
   gpio_config_t io_conf;
@@ -154,6 +154,33 @@ Erc I2C::read(uint8_t* data, uint32_t size) {
   return ret;
 }
 
+//========================================================   A D C
+#include "esp_adc_cal.h"
+
+esp_adc_cal_characteristics_t _characteristics;
+
+#define V_REF 1100
+//#define ADC1_TEST_CHANNEL (ADC1_CHANNEL_6)  // GPIO 34
+#define ADC1_TEST_CHANNEL (ADC1_CHANNEL_5)  // GPIO 33
+
+ADC::ADC(uint32_t pin) { _pin = pin; }
+
+Erc ADC::init() {
+  esp_err_t erc;
+  erc = adc1_config_width(ADC_WIDTH_BIT_12);
+  if (erc) ERROR("adc1_config_width(): %d", erc);
+  erc = adc1_config_channel_atten(ADC1_TEST_CHANNEL, ADC_ATTEN_DB_11);
+  if (erc) ERROR("adc1_config_channel_atten():%d", erc);
+  esp_adc_cal_get_characteristics(V_REF, ADC_ATTEN_DB_11, ADC_WIDTH_BIT_12,
+                                  &_characteristics);
+
+  return E_OK;
+}
+
+float ADC::getValue() {
+  uint32_t voltage = adc1_to_voltage(ADC1_TEST_CHANNEL, &_characteristics);
+  return voltage / 1000.0;
+}
 /*
 void loadHardware(){
         uart_config_t uart_config = {

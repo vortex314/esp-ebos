@@ -13,6 +13,7 @@
 #include "nvs_flash.h"
 
 #include <MqttJson.h>
+#include <Property.h>
 #include <cJSON.h>
 
 Uid uid(200);
@@ -22,8 +23,160 @@ Log logger(256);
 LedBlinker led;
 System sys("system");
 
+void logCbor(const char* prefix, Cbor& cbor) {
+  uid_t key, value;
+  Str str(100);
+  Cbor::PackType ct;
+
+  cbor.offset(0);
+
+  while (cbor.hasData()) {
+    cbor.get(key);
+
+    const char* label = uid.label(key);
+    str.append(" | ").append(label).append(":");
+    if (label[0] == '%') {
+      cbor.get(value);
+      str.append("").append(uid.label(value));
+    } else {
+      ct = cbor.tokenToString(str);
+      if (ct == Cbor::P_BREAK || ct == Cbor::P_ERROR) break;
+    }
+    str.append("");
+    if (cbor.hasData()) str << "";
+  };
+  INFO("%s ::: %s", prefix, str.c_str());
+}
+
 //================================================================================
 #include <Hardware.h>
+
+//================================================================================
+#include <Hardware.h>
+
+//================================================================================
+#include <Hardware.h>
+
+#include "HCSR04.h"
+
+class Drive : public Actor {
+  DigitalOut& _left;
+  DigitalOut& _right;
+  DigitalOut& _enable;
+  ADC& _current;
+  ADC& _position;
+  uint32_t _count;
+  float _min, _max;
+  float _target;
+  float _direction;
+  float _voltage;
+
+ public:
+  Drive(const char* name, DigitalOut& left, DigitalOut& right,
+        DigitalOut& enable, ADC& current, ADC& position)
+      : Actor(name),
+        _left(left),
+        _right(right),
+        _enable(enable),
+        _current(current),
+        _position(position) {
+    uid.add("cm");
+    uid.add("distance");
+    _count = 0;
+    _target = 1.8;
+    _min = 1.1;
+    _max = 2.35;
+    _direction = 0;
+  };
+  virtual ~Drive(){};
+
+  void init() {
+    _left.init();
+    _right.init();
+    _enable.init();
+    _position.init();
+    _current.init();
+    _left.write(0);
+    _right.write(0);
+    _enable.write(0);
+    _target = 1.9;
+    _direction = 0.0;
+    calcTarget(0);
+  }
+  void setup() {
+    timeout(5000);
+    init();
+    uid.add("voltage");
+    uid.add("target");
+    uid.add("direction");
+    eb.onDst(id()).call(this);
+    Property<float>::build(_target, id(), H("target"), 100);
+    Property<float>::build(_direction, id(), H("direction"), 100);
+    Property<float>::build(_voltage, id(), H("voltage"), 100);
+  }
+
+  void calcTarget(float v) {
+    if (v < -100.0) {
+      v = -100.0;
+    } else if (v > 100) {
+      v = 100.0;
+    };
+    float v1 = (v + 100) / 200;  // 0->1.0
+    _target = (v1 * (_max - _min)) + _min;
+  }
+
+  float absolute(float f) {
+    if (f > 0) return f;
+    return -f;
+  }
+  void onEvent(Cbor& msg) {
+    _voltage = _position.getValue();
+    if (eb.isRequest(id(), H("set"))) {
+      logCbor("RCV", msg);
+      float newDirection;
+
+      if (msg.getKeyValue(H("direction"), newDirection)) {
+        calcTarget(newDirection);
+        eb.reply().addKeyValue(EB_ERROR, E_OK);
+        eb.send();
+      } else {
+        ERROR(" set failed, no target found ");
+      }
+    } else {
+      timeout(10);
+      float delta = absolute(_voltage - _target);
+      if (delta < 0.05) {
+        _left.write(1);
+        _right.write(1);
+        _enable.write(1);
+      } else if (_voltage < _target) {
+        _left.write(0);
+        _right.write(1);
+        _enable.write(1);
+      } else if (_voltage > _target) {
+        _left.write(1);
+        _right.write(0);
+        _enable.write(1);
+      }
+      _count++;
+
+      /* if ((_count % 100) == 0) {
+         _direction += 10;
+         if (_direction >= 150) _direction = -150;
+         calcTarget(_direction);
+       }*/
+    }
+  }
+};
+
+DigitalOut left(25);
+DigitalOut right(26);
+DigitalOut enable(32);
+ADC current(36);
+ADC position(33);
+Drive drive("drive", left, right, enable, current, position);
+
+//===============================================================================
 
 #include "HMC5883L.h"
 
@@ -70,12 +223,10 @@ class Compass : public Actor {
     eb.send();
     eb.publicEvent(id(), H("z")).addKeyValue(H("z"), v.ZAxis);
     eb.send();
+
     //   _hmc.printReg();
   }
 };
-
-//================================================================================
-#include <Hardware.h>
 
 #include "HCSR04.h"
 
@@ -96,23 +247,29 @@ class UltraSonic : public Actor {
   }
   void onEvent(Cbor& event) {
     timeout(100);
-    INFO("distance : %lld µsec = %f cm ", _hcsr.getTime(),
-         _hcsr.getCentimeters());
-    eb.publicEvent(id(), H("distance"))
-        .addKeyValue(H("distance"), _hcsr.getCentimeters());
-    eb.send();
+    float cm = _hcsr.getCentimeters();
+    if (cm < 400 && cm > 0) {
+      INFO("distance : %lld µsec = %f cm ", _hcsr.getTime(),
+           _hcsr.getCentimeters());
+      eb.publicEvent(id(), H("distance"))
+          .addKeyValue(H("distance"), _hcsr.getCentimeters());
+      eb.send();
+      eb.request(drive.id(), H("set"), id())
+          .addKeyValue(H("direction"), _hcsr.getCentimeters() - 100);
+      eb.send();
+    }
     _hcsr.trigger();
   }
 };
+//================================================================================
 
-//===============================================================================
 #include <Mqtt.h>
 #include <Wifi.h>
 
 Wifi wifi("Wifi");
 Mqtt mqtt("mqtt");
 
-I2C i2c(I2C_NUM_0, 25, 26);
+I2C i2c(I2C_NUM_0, 15, 4);
 // UEXT 1 port 0 scl:15  sda:4
 // UEXT 2 port 0 scl:25  sda:26
 // UEXT 3 port 0 scl:22  sda:5
@@ -142,8 +299,9 @@ extern "C" void setup() {
   led.setMqtt(mqtt.id());
   led.setWifi(wifi.id());
 
-  compass.setup();
+  // compass.setup();
   us.setup();
+  drive.setup();
 
   logger.setLogLevel('D');
   eb.onAny().call([](Cbor& msg) {  // Log all events

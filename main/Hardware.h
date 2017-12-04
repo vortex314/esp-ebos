@@ -102,7 +102,14 @@ class I2C {
 
 class SPI : public ByteStream {};
 
-class ADC {};
+class ADC {
+  uint32_t _pin;
+
+ public:
+  ADC(uint32_t pin);
+  Erc init();
+  float getValue();
+};
 
 class UEXT {
  public:

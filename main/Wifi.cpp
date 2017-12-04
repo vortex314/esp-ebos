@@ -1,3 +1,4 @@
+#include <Property.h>
 #include <Wifi.h>
 
 #include <stdlib.h>
@@ -8,6 +9,9 @@
 #include <esp_wifi.h>
 
 Wifi *Wifi::_me = 0;
+
+char my_ip_address[20];
+const char *getIpAddress() { return my_ip_address; }
 
 Wifi::Wifi(const char *name) : Actor(name), _ssid(32), _pswd(64) { _me = this; }
 
@@ -23,10 +27,12 @@ esp_err_t Wifi::event_handler(void *ctx, system_event_t *event) {
       esp_wifi_connect();
       break;
 
-    case SYSTEM_EVENT_STA_GOT_IP:
+    case SYSTEM_EVENT_STA_GOT_IP: {
+      system_event_sta_got_ip_t *got_ip = &event->event_info.got_ip;
+      ip4addr_ntoa_r(&got_ip->ip_info.ip, my_ip_address, 20);
       eb.publish(_me->id(), H("connected"));
-
       break;
+    }
 
     case SYSTEM_EVENT_STA_DISCONNECTED:
       eb.publish(_me->id(), H("disconnected"));
@@ -59,6 +65,8 @@ void Wifi::setup() {
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
+  uid.add("IP");
+  Property<const char *>::build(getIpAddress, id(), H("IP"), 10000);
 }
 
 void Wifi::onEvent(Cbor &ev) {}

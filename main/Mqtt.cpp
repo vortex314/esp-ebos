@@ -38,6 +38,11 @@ void Mqtt::onStatusChange(esp_mqtt_status_t status) {
   }
 }
 
+void Mqtt::onMessage(const char *topic, uint8_t *payload, uint32_t size) {
+  _me->onMessageReceived(topic, payload, size);
+  INFO(" mqtt topic received : %s ", topic);
+}
+
 void Mqtt::onConnected() {
   _connected = true;
   eb.publish(id(), H("connected"));
@@ -56,11 +61,6 @@ void Mqtt::onMessageReceived(const char *topic, uint8_t *payload,
       .addKeyValue(H("topic"), topic)
       .addKeyValue(H("message"), data);
   eb.send();
-}
-
-void Mqtt::onMessage(const char *topic, uint8_t *payload, uint32_t size) {
-  _me->onMessageReceived(topic, payload, size);
-  INFO(" mqtt topic received : %s ", topic);
 }
 
 void Mqtt::setup() {
@@ -93,9 +93,11 @@ void Mqtt::onEvent(Cbor &ev) {
     Str topic(40);
     Bytes message(200);
     if (ev.getKeyValue(H("topic"), topic) &&
-        ev.getKeyValue(H("message"), message) && _connected)
+        ev.getKeyValue(H("message"), message) && _connected) {
       publish(topic.c_str(), message.data(), message.length(), 1, false);
-    else {
+      eb.reply().addKeyValue(EB_ERROR, E_OK);
+      eb.send();
+    } else {
       WARN(" no topic or message found or disconnected ");
     }
   } else if (eb.isRequest(id(), H("subscribe"))) {
@@ -103,6 +105,9 @@ void Mqtt::onEvent(Cbor &ev) {
     if (ev.getKeyValue(H("topic"), topic)) {
       if (!esp_mqtt_subscribe(topic.c_str(), 0) && _connected) {
         ERROR(" mqtt subscribe failed");
+      } else {
+        eb.reply().addKeyValue(EB_ERROR, E_OK);
+        eb.send();
       }
     } else {
       Str str(256);
