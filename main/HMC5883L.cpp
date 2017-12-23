@@ -23,6 +23,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #include <Log.h>
 
 HMC5883L::HMC5883L(I2C& i2c) : _i2c(i2c) {}
+HMC5883L::HMC5883L(Connector& connector) : _i2c(connector.getI2C()) {}
 
 bool HMC5883L::init() {
   _i2c.setClock(400000);

@@ -1,11 +1,43 @@
 #include <Hardware.h>
 
 #include <Log.h>
+#include <driver/gpio.h>
 #include <driver/i2c.h>
 #include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+static struct ESP32 { i2c_port_t _i2c_port; } esp32 = {I2C_NUM_0};
+typedef struct {
+  i2c_port_t _port;
+} I2CObject;
+
+/*
+Uart& getUart() {
+    lockPin(LP_TXD);
+    lockPin(LP_RXD);
+    return Uart(LP_TXD, LP_RXD);
+  };
+  void freeUart();
+  Spi& getSpi() { return Spi(LP_MISO, LP_MOSI, LP_SCK, LP_CS); };
+  I2C& getI2C() {
+    lockPin(LP_SDA);
+    lockPin(LP_SCL);
+    return I2C(LP_SDA, LP_SCL);
+  };*/
+
+/**********************************************************************
+ *
+######                                                    ###
+#     #     #     ####      #     #####    ##    #         #     #    #
+#     #     #    #    #     #       #     #  #   #         #     ##   #
+#     #     #    #          #       #    #    #  #         #     # #  #
+#     #     #    #  ###     #       #    ######  #         #     #  # #
+#     #     #    #    #     #       #    #    #  #         #     #   ##
+######      #     ####      #       #    #    #  ######   ###    #    #
+
+ *
+ * *******************************************************************/
 //================================================== DigitalIn =====
 DigitalIn::DigitalIn(uint32_t pin) : _gpio(pin) {}
 
@@ -41,6 +73,8 @@ Erc DigitalIn::init() {
   return gpio_config(&io_conf);
 }
 
+Erc DigitalIn::deInit() { return E_OK; }
+
 Erc DigitalIn::onChange(PinChange pinChange, FunctionPointer fp, void* object) {
   _pinChange = pinChange;
   _fp = fp;
@@ -48,6 +82,20 @@ Erc DigitalIn::onChange(PinChange pinChange, FunctionPointer fp, void* object) {
   return E_OK;
 }
 
+int DigitalIn::read(){
+  return gpio_get_level((gpio_num_t)_gpio);
+}
+
+PhysicalPin DigitalIn::getPin() { return _gpio; }
+/*
+######                                                  #######
+#     #     #     ####      #     #####    ##    #      #     #  #    #   #####
+#     #     #    #    #     #       #     #  #   #      #     #  #    #     #
+#     #     #    #          #       #    #    #  #      #     #  #    #     #
+#     #     #    #  ###     #       #    ######  #      #     #  #    #     #
+#     #     #    #    #     #       #    #    #  #      #     #  #    #     #
+######      #     ####      #       #    #    #  ###### #######   ####      #
+*/
 //================================================== DigitalOu =====
 DigitalOut::DigitalOut(uint32_t pin) : _gpio(pin) {}
 
@@ -70,6 +118,8 @@ Erc DigitalOut::init() {
   return gpio_config(&io_conf);
 }
 
+Erc DigitalOut::deInit() { return E_OK; }
+
 Erc DigitalOut::write(int x) {
   if (x) {
     return gpio_set_level((gpio_num_t)_gpio, 1);
@@ -78,6 +128,19 @@ Erc DigitalOut::write(int x) {
   }
 }
 
+PhysicalPin DigitalOut::getPin() { return _gpio; }
+/**********************************************************************
+ *
+                                *###    #####   #####
+                                  #    #     # #     #
+                                  #          # #
+                                  #     #####  #
+                                  #    #       #
+                                  #    #       #     #
+                                 ###   #######  #####
+
+ *
+ * *******************************************************************/
 //================================================== I2C =======
 /*
  * * */
@@ -87,15 +150,16 @@ Erc DigitalOut::write(int x) {
 #define ACK_VAL 0x0       /*!< I2C ack value */
 #define NACK_VAL 0x1      /*!< I2C nack value */
 
-I2C::I2C(i2c_port_t idx, uint32_t scl, uint32_t sda)
+I2C::I2C(PhysicalPin scl, PhysicalPin sda)
     : _txd(16), _rxd(16), _scl(scl), _sda(sda) {
-  _port = idx;
+  _object = new I2CObject();
+  ((I2CObject*)_object)->_port = esp32._i2c_port;
   _clock = 100000;
   _slaveAddress = 0x1E;  // HMC 5883L
 }
 
 I2C::~I2C() {
-  esp_err_t erc = i2c_driver_delete(_port);
+  esp_err_t erc = i2c_driver_delete(((I2CObject*)_object)->_port);
   INFO(" erc : %d ", erc);
 }
 
@@ -108,13 +172,15 @@ Erc I2C::init() {
   conf.scl_io_num = (gpio_num_t)_scl;
   conf.scl_pullup_en = GPIO_PULLUP_ENABLE;
   conf.master.clk_speed = _clock;
-  esp_err_t erc = i2c_param_config(_port, &conf);
+  esp_err_t erc = i2c_param_config(((I2CObject*)_object)->_port, &conf);
   INFO("i2c_param_config() : %d", erc);
-  erc = i2c_driver_install(_port, conf.mode, 0, 0,
+  erc = i2c_driver_install(((I2CObject*)_object)->_port, conf.mode, 0, 0,
                            0);  // buffer sizes 0 formaster
   INFO("i2c_driver_install() : %d", erc);
   return erc;
 }
+
+Erc I2C::deInit() { return E_OK; }
 
 Erc I2C::write(uint8_t* data, uint32_t size) {
   esp_err_t erc;
@@ -128,7 +194,8 @@ Erc I2C::write(uint8_t* data, uint32_t size) {
   if (erc) INFO("i2c_master_write():%d", erc);
   erc = i2c_master_stop(cmd);
   if (erc) INFO("i2c_master_stop():%d", erc);
-  erc = i2c_master_cmd_begin(_port, cmd, 1000 / portTICK_RATE_MS);
+  erc = i2c_master_cmd_begin(((I2CObject*)_object)->_port, cmd,
+                             1000 / portTICK_RATE_MS);
   if (erc) INFO("i2c_master_cmd_begin():%d", erc);
   i2c_cmd_link_delete(cmd);
   return erc;
@@ -149,7 +216,8 @@ Erc I2C::read(uint8_t* data, uint32_t size) {
   }
   i2c_master_read_byte(cmd, data + size - 1, NACK_VAL);
   i2c_master_stop(cmd);
-  esp_err_t ret = i2c_master_cmd_begin(_port, cmd, 1000 / portTICK_RATE_MS);
+  esp_err_t ret = i2c_master_cmd_begin(((I2CObject*)_object)->_port, cmd,
+                                       1000 / portTICK_RATE_MS);
   i2c_cmd_link_delete(cmd);
   return ret;
 }
@@ -181,32 +249,236 @@ float ADC::getValue() {
   uint32_t voltage = adc1_to_voltage(ADC1_TEST_CHANNEL, &_characteristics);
   return voltage / 1000.0;
 }
-/*
-void loadHardware(){
-        uart_config_t uart_config = {
-        .baud_rate = 115200,
-        .data_bits = UART_DATA_8_BITS,
-        .parity    = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-                .rx_flow_ctrl_thresh =1
-    };
-    uart_param_config(UART_NUM_1, &uart_config);
-    uart_set_pin(UART_NUM_2, GPIO_NUM_17, GPIO_NUM_16, UART_PIN_NO_CHANGE,
-UART_PIN_NO_CHANGE); uart_driver_install(UART_NUM_2, BUF_SIZE * 2, 0, 0, NULL,
-0);
 
-        // Configure a temporary buffer for the incoming data
-    uint8_t *data = (uint8_t *) malloc(BUF_SIZE);
+  /*******************************************************************************
 
-    while (1) {
-        // Read data from the UART
-        int len = uart_read_bytes(UART_NUM_1, data, BUF_SIZE, 20 /
-portTICK_RATE_MS);
-        // Write data back to the UART
-        uart_write_bytes(UART_NUM_1, (const char *) data, len);
+                                           #####  ######    ###
+                                          #     # #     #    #
+                                          #       #     #    #
+                                           #####  ######     #
+                                                # #          #
+                                          #     # #          #
+                                           #####  #         ###
+
+  *****************************************************************************/
+
+#include "driver/spi_common.h"
+#include "driver/spi_master.h"
+#include "esp_system.h"
+
+class SPI_ESP32 : public SPI {
+ protected:
+  FunctionPointer _onExchange;
+  uint32_t _clock;
+  uint32_t _mode;
+  bool _lsbFirst;
+  PhysicalPin _miso, _mosi, _sck, _cs;
+  void* _object;
+  spi_device_handle_t _spi;
+
+ public:
+  SPI_ESP32(PhysicalPin miso, PhysicalPin mosi, PhysicalPin sck, PhysicalPin cs)
+      : _miso(miso), _mosi(mosi), _sck(sck), _cs(cs) {
+    _clock = 100000;
+    _mode = 0;
+  };
+
+  Erc init() {
+    DEBUG(" SPI_ESP32 : miso : %d, mosi : %d , sck : %d , cs : %d ", _miso,
+          _mosi, _sck, _cs);
+
+    esp_err_t ret;
+
+    spi_bus_config_t buscfg;
+    buscfg.miso_io_num = _miso;
+    buscfg.mosi_io_num = _mosi;
+    buscfg.sclk_io_num = _sck;
+    buscfg.quadwp_io_num = -1;
+    buscfg.quadhd_io_num = -1;
+    buscfg.max_transfer_sz = 0;
+
+    // Initialize the SPI bus
+    ret = spi_bus_initialize(HSPI_HOST, &buscfg, 1);
+    if (ret) {
+      ERROR("spi_bus_initialize(HSPI_HOST, &buscfg, 1) = %d ", ret);
+      return EIO;
     }
 
+    spi_device_interface_config_t devcfg;
+    memset(&devcfg, 0, sizeof(devcfg));
+    devcfg.clock_speed_hz = _clock;  // Clock out at 10 MHz
+    devcfg.mode = _mode;             // SPI mode 0
+    devcfg.spics_io_num = _cs;       // CS pin
+    devcfg.queue_size = 7;
+    // We want to be able to queue 7 transactions at a time
+    devcfg.pre_cb = 0;
+    // Specify pre-transfer callback to handle D/C line
+    ret = spi_bus_add_device(HSPI_HOST, &devcfg, &_spi);
+    if (ret) {
+      ERROR("spi_bus_add_device(HSPI_HOST, &devcfg, &_spi) = %d ", ret);
+      return EIO;
+    }
+    return E_OK;
+  };
+
+  Erc deInit(){
+    esp_err_t ret = spi_bus_remove_device(_spi);
+    if (ret) {
+      ERROR("spi_bus_remove_device(_spi) = %d ", ret);
+      return EIO;
+    }
+    ret= spi_bus_free(HSPI_HOST);
+    if (ret) {
+      ERROR("spi_bus_free(HSPI_HOST) = %d ", ret);
+      return EIO;
+    }
+    return E_OK;
+  }
+
+  Erc exchange(Bytes& in, Bytes& out) {
+    uint8_t inData[100];
+    esp_err_t ret;
+    spi_transaction_t t, *pTrans;
+    if (out.length() == 0) return E_INVAL;  // no need to send anything
+    memset(&t, 0, sizeof(t));               // Zero out the transaction
+    t.length = out.length() * 8;
+    // Len is in bytes, transaction length is in bits.
+    t.tx_buffer = out.data();  // Data
+    t.rx_buffer = inData;
+    //    t.flags = SPI_TRANS_USE_RXDATA;
+    t.user = (void*)1;  // D/C needs to be set to 1
+    ret = spi_device_queue_trans(_spi, &t, 1000);
+    if (ret) {
+      ERROR("spi_device_queue_trans(_spi, &t, 1000) = %d ", ret);
+      return EIO;
+    }
+    ret = spi_device_get_trans_result(_spi, &pTrans, 1000);
+    if (ret) {
+      ERROR("spi_device_get_trans_result(_spi, &pTrans, 1000) = %d ", ret);
+      return EIO;
+    }
+    in.clear();
+    for (int i = 0; i < out.length(); i++) {
+      in.write(inData[i]);
+    }
+    return E_OK;  // Should have had no issues.
+  };
+
+
+
+  Erc setClock(uint32_t clock) {
+    _clock = clock;
+    return E_OK;
+  }
+
+  Erc setMode(SPIMode mode) {
+    _mode = mode;
+    return E_OK;
+  }
+
+  Erc setLsbFirst(bool f){
+    _lsbFirst=f;
+    return true;
+  }
+
+  Erc onExchange(FunctionPointer p, void* ptr) { return E_OK; }
+};
+
+SPI::~SPI() {}
+
+SPI& SPI::create(PhysicalPin miso, PhysicalPin mosi, PhysicalPin sck,
+                 PhysicalPin cs) {
+  SPI_ESP32* ptr = new SPI_ESP32(miso, mosi, sck, cs);
+  return *ptr;
 }
 
+/*
+ #####
+#     #   ####   #    #  #    #  ######   ####    #####   ####   #####
+#        #    #  ##   #  ##   #  #       #    #     #    #    #  #    #
+#        #    #  # #  #  # #  #  #####   #          #    #    #  #    #
+#        #    #  #  # #  #  # #  #       #          #    #    #  #####
+#     #  #    #  #   ##  #   ##  #       #    #     #    #    #  #   #
+ #####    ####   #    #  #    #  ######   ####      #     ####   #    #
+
 */
+Connector::Connector(uint32_t idx) {  // defined by PCB layout
+  if (idx == 1) {
+    _physicalPins[LP_TXD] = 17;
+    _physicalPins[LP_RXD] = 16;
+    _physicalPins[LP_SCL] = 15;
+    _physicalPins[LP_SDA] = 4;
+    _physicalPins[LP_MISO] = 19;
+    _physicalPins[LP_MOSI] = 23;
+    _physicalPins[LP_SCK] = 18;
+    _physicalPins[LP_CS] = 21;
+  } else if (idx == 2) {
+    _physicalPins[LP_TXD] = 32;
+    _physicalPins[LP_RXD] = 33;
+    _physicalPins[LP_SCL] = 25;
+    _physicalPins[LP_SDA] = 26;
+    _physicalPins[LP_MISO] = 27;
+    _physicalPins[LP_MOSI] = 14;
+    _physicalPins[LP_SCK] = 13;
+    _physicalPins[LP_CS] = 12;
+  } else if (idx == 3) {
+    _physicalPins[LP_TXD] = 1;
+    _physicalPins[LP_RXD] = 3;
+    _physicalPins[LP_SCL] = 22;
+    _physicalPins[LP_SDA] = 5;
+    _physicalPins[LP_MISO] = 36;
+    _physicalPins[LP_MOSI] = 39;
+    _physicalPins[LP_SCK] = 34;
+    _physicalPins[LP_CS] = 35;
+  }
+  _spi = 0;
+  _i2c = 0;
+  _uart = 0;
+  _pinsUsed = 0;
+  _connectorIdx = idx;
+}
+
+PhysicalPin Connector::toPin(uint32_t logicalPin) {
+  INFO(" logical %d => %d physial ", logicalPin, _physicalPins[logicalPin]);
+  return _physicalPins[logicalPin];
+}
+
+UART& Connector::getUART() {
+  lockPin(LP_TXD);
+  lockPin(LP_RXD);
+  _uart = new UART(toPin(LP_TXD), toPin(LP_RXD));
+  return *_uart;
+};
+
+SPI& Connector::getSPI() {
+  _spi = new SPI_ESP32(toPin(LP_MISO), toPin(LP_MOSI), toPin(LP_SCK),
+                       toPin(LP_CS));
+  lockPin(LP_MISO);
+  lockPin(LP_MOSI);
+  lockPin(LP_SCK);
+  lockPin(LP_CS);
+  return *_spi;
+}
+I2C& Connector::getI2C() {
+  lockPin(LP_SDA);
+  lockPin(LP_SCL);
+  _i2c = new I2C(toPin(LP_SCL), toPin(LP_SDA));
+  return *_i2c;
+};
+
+DigitalOut& Connector::getDigitalOut(LogicalPin lp) {
+  lockPin(lp);
+  DigitalOut* _out = new DigitalOut(toPin(lp));
+  return *_out;
+}
+
+DigitalIn& Connector::getDigitalIn(LogicalPin lp) {
+  lockPin(lp);
+  DigitalIn* _in = new DigitalIn(toPin(lp));
+  return *_in;
+}
+
+void Connector::lockPin(LogicalPin lp) {
+  if (_pinsUsed & lp) ERROR(" PIN in use %d >>>>>>>>>>>>>>>>>> ", lp);
+  _pinsUsed |= (1 << lp);
+}

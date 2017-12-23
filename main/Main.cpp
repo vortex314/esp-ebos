@@ -51,12 +51,6 @@ void logCbor(const char* prefix, Cbor& cbor) {
 //================================================================================
 #include <Hardware.h>
 
-//================================================================================
-#include <Hardware.h>
-
-//================================================================================
-#include <Hardware.h>
-
 #include "HCSR04.h"
 
 class Drive : public Actor {
@@ -175,6 +169,7 @@ DigitalOut enable(32);
 ADC current(36);
 ADC position(33);
 Drive drive("drive", left, right, enable, current, position);
+#include <DWM1000_Anchor.h>
 
 //===============================================================================
 
@@ -185,6 +180,12 @@ class Compass : public Actor {
 
  public:
   Compass(const char* name, I2C& i2c) : Actor(name), _hmc(i2c) {
+    uid.add("x");
+    uid.add("y");
+    uid.add("z");
+  };
+  Compass(const char* name, Connector& connector)
+      : Actor(name), _hmc(connector) {
     uid.add("x");
     uid.add("y");
     uid.add("z");
@@ -214,7 +215,7 @@ class Compass : public Actor {
   }
   void onEvent(Cbor& event) {
     struct Vector v;
-    timeout(100);
+    timeout(500);
     v = _hmc.readNormalize();
     INFO("%f:%f:%f", v.XAxis, v.YAxis, v.ZAxis);
     eb.publicEvent(id(), H("x")).addKeyValue(H("x"), v.XAxis);
@@ -234,6 +235,11 @@ class UltraSonic : public Actor {
   HCSR04 _hcsr;
 
  public:
+  UltraSonic(const char* name, Connector& connector)
+      : Actor(name), _hcsr(connector) {
+    uid.add("cm");
+    uid.add("distance");
+  };
   UltraSonic(const char* name, DigitalOut& pinTrigger, DigitalIn& pinEcho)
       : Actor(name), _hcsr(pinTrigger, pinEcho) {
     uid.add("cm");
@@ -246,7 +252,7 @@ class UltraSonic : public Actor {
     _hcsr.init();
   }
   void onEvent(Cbor& event) {
-    timeout(100);
+    timeout(500);
     float cm = _hcsr.getCentimeters();
     if (cm < 400 && cm > 0) {
       INFO("distance : %lld µsec = %f cm ", _hcsr.getTime(),
@@ -269,15 +275,23 @@ class UltraSonic : public Actor {
 Wifi wifi("Wifi");
 Mqtt mqtt("mqtt");
 
-I2C i2c(I2C_NUM_0, 15, 4);
+// I2C i2c(I2C_NUM_0, 15, 4);
 // UEXT 1 port 0 scl:15  sda:4
 // UEXT 2 port 0 scl:25  sda:26
 // UEXT 3 port 0 scl:22  sda:5
-Compass compass("compass", i2c);
+Connector uext1(1);
+Connector uext2(2);
+Connector uext3(3);
 
-DigitalIn echoPin(4);
-DigitalOut triggerPin(15);
-UltraSonic us("US", triggerPin, echoPin);  // SCL -> trigger,SDA -> echo
+UltraSonic us("US", uext3);  // SCL -> trigger,SDA -> echo
+Compass compass("compass", uext2);
+
+SPI& spi = SPI::create(19, 23, 18, 21);
+DigitalIn irq(16);
+DigitalOut reset(17); 
+
+DWM1000_Anchor dwm1000Anchor("anchor",spi,irq,reset);
+
 MqttJson gateway("gateway", 1024);
 
 extern "C" void setup() {
@@ -299,9 +313,11 @@ extern "C" void setup() {
   led.setMqtt(mqtt.id());
   led.setWifi(wifi.id());
 
+  dwm1000Anchor.setup();
+
   // compass.setup();
-  us.setup();
-  drive.setup();
+  //  us.setup();
+  //  drive.setup();
 
   logger.setLogLevel('D');
   eb.onAny().call([](Cbor& msg) {  // Log all events
@@ -309,6 +325,21 @@ extern "C" void setup() {
     eb.log(str, msg);
     DEBUG("%s", str.c_str());
   });
+
+  // SPI_ESP32 spi(19, 23, 18, 21);
+
+
+
+  Bytes out(10);
+  Bytes in(10);
+  for (int j = 0; j < 4; j++) {
+    for (int i = 0; i < 5; i++) {
+      out.write((uint8_t)0);
+    }
+    spi.exchange(in, out);
+    INFO(" EUID : %X %X %X %X ", in.peek(1), in.peek(2), in.peek(3),
+         in.peek(4));
+  }
 
   sys.setup();
 

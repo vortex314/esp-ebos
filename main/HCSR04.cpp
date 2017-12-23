@@ -4,16 +4,22 @@
 #include <Sys.h>
 
 #include "driver/gpio.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 HCSR04::HCSR04(DigitalOut& triggerPin, DigitalIn& echoPin)
     : _trigger(triggerPin), _echo(echoPin) {}
 
+HCSR04::HCSR04(Connector& connector)
+    : _trigger(connector.getDigitalOut(LP_SCL)),
+      _echo(connector.getDigitalIn(LP_SDA)) {}
+
 Erc HCSR04::init() {
-  INFO(" trigger init ");
   _trigger.init();
   _echo.onChange(DigitalIn::DIN_FALL, onEcho, this);
-  INFO(" echo init");
   _echo.init();
+  INFO(" HCSR04 init ( trigger = %d, echo = %d ) ", _trigger.getPin(),
+       _echo.getPin());
   return E_OK;
 }
 

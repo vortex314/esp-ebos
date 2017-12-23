@@ -85,6 +85,7 @@ struct Vector {
 class HMC5883L {
  public:
   HMC5883L(I2C& i2c);
+  HMC5883L(Connector& i2c);
   bool init();
 
   Vector readRaw(void);

@@ -12,6 +12,7 @@ class HCSR04 {
   uint64_t _echo_usec;
 
  public:
+  HCSR04(Connector&);
   HCSR04(DigitalOut&, DigitalIn&);
   Erc init();
   Erc trigger();
