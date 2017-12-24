@@ -12,10 +12,15 @@
 class Mqtt : public Actor {
   static Mqtt* _me;
   Str _host;
-  uint16_t _port;
+  uint32_t _port;
   Str _user;
   Str _password;
   Str _clientId;
+  Str _willTopic;
+  Str _willMessage;
+  int _willQos;
+  bool _willRetain;
+  uint32_t _keepAlive;
   uid_t _wifi;
   bool _connected;
 

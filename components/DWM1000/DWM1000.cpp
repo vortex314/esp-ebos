@@ -96,11 +96,6 @@ static const struct {
                     {0, 0x00, 0x00},
                     {7, 0x32527292, 0x5171B1D1}};
 
-void dwt_to_isr(void* p) { 
-  INFO(" ISR ");
-  dwt_isr(); }
-
-
 void DWM1000::setup() {
   //_________________________________________________INIT SPI ESP8266
 
@@ -111,7 +106,7 @@ void DWM1000::setup() {
   _spi.init();
   spi_set_global(&_spi);  // to support deca spi routines
   spi_set_rate_low();
-   dwt_readdevid();
+  dwt_readdevid();
 
   //    int pin = D2;   // RESET PIN == D1 == GPIO5
   //    pinMode(DWM_PIN_IRQ, 0);// INPUT
@@ -123,6 +118,7 @@ void DWM1000::setup() {
   //    dwt_setaddress16(((uint16_t)'E'<<8)+'V');
   Str strAddress(40);
 
+  for (int i = 0; i < 8; i++) _longAddress[i] = i;
   dwt_seteui(_longAddress);
   dwt_geteui(_longAddress);
 
@@ -166,13 +162,13 @@ void DWM1000::setup() {
   dwt_setrxantennadelay(
       RX_ANT_DLY); /* Apply default antenna delay value. See NOTE 1 below. */
   dwt_settxantennadelay(TX_ANT_DLY);
-INFO(" before irq set ");
-  _irq.onChange(DigitalIn::DIN_RAISE, dwt_to_isr, this);
+  if (_interruptFunction)
+    _irq.onChange(DigitalIn::DIN_RAISE, _interruptFunction, _interruptArgument);
   _irq.init();
-INFO(" after irq set ");
-//  config.setNameSpace("lpos");
-//  config.get("x", _x, 1000);
-//  config.get("y", _y, 2000);
+  _reset.init();
+  config.setNameSpace("lpos");
+  config.get("x", _x, 1000);
+  config.get("y", _y, 2000);
   INFO(" after config set ");
 }
 
@@ -258,4 +254,9 @@ void DWM1000::setShortAddress(uint16_t address) { _shortAddress = address; }
 
 void DWM1000::setLongAddress(uint8_t address[]) {
   memcpy(_longAddress, address, 8);
+}
+
+void DWM1000::onInterrupt(FunctionPointer fp, void* argument) {
+  _interruptFunction = fp;
+  _interruptArgument = argument;
 }

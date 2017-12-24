@@ -2,6 +2,7 @@
 #include <LedBlinker.h>
 #include <Sys.h>
 #include <System.h>
+#include <esp_attr.h>
 #include "driver/gpio.h"
 #include "esp_event.h"
 #include "esp_event_loop.h"
@@ -14,7 +15,9 @@
 
 #include <MqttJson.h>
 #include <Property.h>
-#include <cJSON.h>
+//#include <cJSON.h>
+#include <Config.h>
+#include <Mdns.h>
 
 Uid uid(200);
 EventBus eb(32000, 1024);
@@ -274,6 +277,7 @@ class UltraSonic : public Actor {
 
 Wifi wifi("Wifi");
 Mqtt mqtt("mqtt");
+Mdns mdns("mdns");
 
 // I2C i2c(I2C_NUM_0, 15, 4);
 // UEXT 1 port 0 scl:15  sda:4
@@ -288,23 +292,48 @@ Compass compass("compass", uext2);
 
 SPI& spi = SPI::create(19, 23, 18, 21);
 DigitalIn irq(16);
-DigitalOut reset(17); 
+DigitalOut reset(17);
 
-DWM1000_Anchor dwm1000Anchor("anchor",spi,irq,reset);
+DRAM_ATTR DWM1000_Anchor dwm1000Anchor("dwm1000", spi, irq, reset);
 
 MqttJson gateway("gateway", 1024);
+
+void wait() {
+  while (1) {
+    esp_task_wdt_reset();
+    vTaskDelay(1);
+  }
+}
 
 extern "C" void setup() {
   // loadHardware();
 
+  config.load();
+
   Sys::init();
   eb.setup();
+  logger.setLogLevel('I');
+  eb.onAny().call([](Cbor& msg) {  // Log all events
+    Str str(256);
+    eb.log(str, msg);
+    DEBUG("%s", str.c_str());
+  });
 
-  wifi.configure("Merckx3", "LievenMarletteEwoutRonald");
+  Str strHostname(30);
+  char hn[20];
+  sprintf(hn, "ESP%X", Sys::getSerialId());
+
+  config.setNameSpace("sys");
+  config.get("host", strHostname, hn);
+  Sys::hostname(strHostname.c_str());
+
+  //  wifi.configure("Merckx3", "LievenMarletteEwoutRonald");
   wifi.setup();
 
+  mdns.setWifi(wifi.id());
+  mdns.setup();
+
   mqtt.setWifi(wifi.id());
-  mqtt.configure("limero.ddns.net", 1883, "", "");
   mqtt.setup();
 
   gateway.setMqttId(mqtt.id());
@@ -319,36 +348,14 @@ extern "C" void setup() {
   //  us.setup();
   //  drive.setup();
 
-  logger.setLogLevel('D');
-  eb.onAny().call([](Cbor& msg) {  // Log all events
-    Str str(256);
-    eb.log(str, msg);
-    DEBUG("%s", str.c_str());
-  });
-
-  // SPI_ESP32 spi(19, 23, 18, 21);
-
-
-
-  Bytes out(10);
-  Bytes in(10);
-  for (int j = 0; j < 4; j++) {
-    for (int i = 0; i < 5; i++) {
-      out.write((uint8_t)0);
-    }
-    spi.exchange(in, out);
-    INFO(" EUID : %X %X %X %X ", in.peek(1), in.peek(2), in.peek(3),
-         in.peek(4));
-  }
-
   sys.setup();
-
   led.setup();
+  config.save();
 
   while (1) {
     eb.eventLoop();
     esp_task_wdt_reset();
-    vTaskDelay(1);
+    //    vTaskDelay(1);
   }
 }
 

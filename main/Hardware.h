@@ -54,7 +54,7 @@ class UART : public Driver {
 
 class DigitalIn : public Driver {
  public:
-  typedef enum { DIN_RAISE, DIN_FALL, DIN_CHANGE } PinChange;
+  typedef enum { DIN_NONE, DIN_RAISE, DIN_FALL, DIN_CHANGE } PinChange;
   DigitalIn(PhysicalPin pin);
   int read();
   Erc init();
@@ -87,37 +87,18 @@ class DigitalOut : public Driver {
 
 #define I2C_WRITE_BIT
 #define I2C_READ_BIT 0
+
 class I2C : public Driver {
-  Bytes _txd;
-  Bytes _rxd;
-
-  PhysicalPin _scl;
-  PhysicalPin _sda;
-  uint32_t _clock;
-  uint8_t _slaveAddress;
-
-  FunctionPointer _onTxd;
-
-  void* _object;
-
  public:
-  I2C(PhysicalPin scl, PhysicalPin sda);
+  static I2C& create(PhysicalPin scl, PhysicalPin sda);
   ~I2C();
-  Erc init();
-  Erc deInit();
-
-  Erc setClock(uint32_t clock) {
-    _clock = clock;
-    return E_OK;
-  }
-  Erc setSlaveAddress(uint8_t slaveAddress) {
-    _slaveAddress = slaveAddress;
-    return E_OK;
-  }
-
-  Erc write(uint8_t* data, uint32_t size);
-  Erc read(uint8_t* data, uint32_t size);
-  Erc write(uint8_t data);
+  virtual Erc init() = 0;
+  virtual Erc deInit() = 0;
+  virtual Erc setClock(uint32_t) = 0;
+  virtual Erc setSlaveAddress(uint8_t address) = 0;
+  virtual Erc write(uint8_t* data, uint32_t size) = 0;
+  virtual Erc write(uint8_t data) = 0;
+  virtual Erc read(uint8_t* data, uint32_t size) = 0;
 };
 
 class SPI : public Driver {

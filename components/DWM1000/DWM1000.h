@@ -70,6 +70,9 @@ class DWM1000 {
   SPI& _spi;
   DigitalIn& _irq;
   DigitalOut& _reset;
+  FunctionPointer _interruptFunction;
+  void* _interruptArgument;
+
   /*    DWM1000* _me;
    uint32_t _interrupts;
    uint32_t _polls;
@@ -111,6 +114,7 @@ class DWM1000 {
   void createPollMsg(PollMsg& pollMsg, BlinkMsg& blinkMsg);
   void createRespMsg(RespMsg& respMsg, PollMsg& pollMsg);
   void createFinalMsg(FinalMsg& respMsg, RespMsg& pollMsg);
+  void onInterrupt(FunctionPointer, void*);
   bool isForMe(DwmMsg& dmwMsg);
   void tune();
   uint8_t sequence() { return _sequence; }

@@ -1,3 +1,4 @@
+#include <Config.h>
 #include <Property.h>
 #include <Wifi.h>
 
@@ -22,6 +23,7 @@ Erc Wifi::configure(const char *ssid, const char *pswd) {
 }
 
 esp_err_t Wifi::event_handler(void *ctx, system_event_t *event) {
+  INFO(" wifi event : %d ", event->event_id);
   switch (event->event_id) {
     case SYSTEM_EVENT_STA_START:
       esp_wifi_connect();
@@ -50,6 +52,12 @@ esp_err_t Wifi::event_handler(void *ctx, system_event_t *event) {
 void Wifi::init() {}
 
 void Wifi::setup() {
+  config.setNameSpace("wifi");
+  config.get("ssid", _ssid, "Merckx3");
+  config.get("password", _pswd, "LievenMarletteEwoutRonald");
+  //  _hostname = Sys::hostname();
+
+  INFO(" connecting to Wifi ssid:%s ", _ssid.c_str());
   tcpip_adapter_init();
   ESP_ERROR_CHECK(esp_event_loop_init(event_handler, NULL));
 
@@ -59,14 +67,15 @@ void Wifi::setup() {
   ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
 
   wifi_config_t wifi_config;
+  memset(&wifi_config, 0, sizeof(wifi_config));  // needed !!
   strncpy((char *)wifi_config.sta.ssid, _ssid.c_str(), 32);
   strncpy((char *)wifi_config.sta.password, _pswd.c_str(), 64);
 
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
-  uid.add("IP");
-  Property<const char *>::build(getIpAddress, id(), H("IP"), 10000);
+
+  Property<const char *>::build(getIpAddress, id(), "IP", 10000);
 }
 
 void Wifi::onEvent(Cbor &ev) {}

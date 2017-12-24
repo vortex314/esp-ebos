@@ -10,6 +10,7 @@
 #include <Hardware.h>
 #include <Log.h>
 #include <decaSpi.h>
+#include "esp_attr.h"
 
 extern "C" {
 
@@ -58,8 +59,9 @@ typedef unsigned long long uint64;
   500 /* This is the delay from the end of the frame transmission to the \
          enable of the receiver, as programmed for the DW1000's wait for \
          response feature. */
-#define FINAL_RX_TIMEOUT_UUS 3300 /* Receive final timeout. See NOTE 5 below. \
-                                   */
+#define FINAL_RX_TIMEOUT_UUS                       \
+  3300 /* Receive final timeout. See NOTE 5 below. \
+        */
 
 /* Timestamps of frames transmission/reception.
  * As they are 40-bit wide, we need to define a 64-bit int type to handle them.
@@ -69,6 +71,7 @@ typedef signed long long int64;
 static uint64 poll_rx_ts;
 static uint64 resp_tx_ts;
 static uint64 final_rx_ts;
+uint64_t interruptReceived;
 
 /* Speed of light in air, in metres per second. */
 #define SPEED_OF_LIGHT 299702547
@@ -95,9 +98,10 @@ void logAnchor(const char* s, uint32_t state, uint8_t* buffer,
 }
 DWM1000_Anchor* DWM1000_Anchor::_anchor;
 
-DWM1000_Anchor::DWM1000_Anchor(const char* name,SPI& spi,DigitalIn& irq,DigitalOut& reset)
+DWM1000_Anchor::DWM1000_Anchor(const char* name, SPI& spi, DigitalIn& irq,
+                               DigitalOut& reset)
     : Actor(name),
-      DWM1000(spi,irq,reset),
+      DWM1000(spi, irq, reset),
       _panAddress(3),
       _irqEvent(100),
       _blinkTimer(3000) {
@@ -108,21 +112,27 @@ DWM1000_Anchor::DWM1000_Anchor(const char* name,SPI& spi,DigitalIn& irq,DigitalO
   _anchor = this;
   _hasIrqEvent = false;
   _state = RCV_ANY;
+  _txErrors = 0;
+  _delta = 0;
 }
 
 DWM1000_Anchor::~DWM1000_Anchor() {}
 
-void DWM1000_Anchor::sendBlinkMsg() {
+void IRAM_ATTR DWM1000_Anchor::sendBlinkMsg() {
   int erc;
   createBlinkFrame(_blinkMsg);
   dwt_writetxdata(sizeof(_blinkMsg), _blinkMsg.buffer, 0);
   dwt_writetxfctrl(sizeof(_blinkMsg), 0);
   erc = dwt_starttx(DWT_START_TX_IMMEDIATE);
-  if (erc < 0) WARN("BLINK TXD FAILED");
+  if (erc < 0) {
+    WARN("BLINK TXD FAILED");
+    _txErrors++;
+  };
+  _blinks++;
   //    INFO("blink ");
 }
 
-int DWM1000_Anchor::sendRespMsg() {
+int IRAM_ATTR DWM1000_Anchor::sendRespMsg() {
   uint32 resp_tx_time;
 
   poll_rx_ts = get_rx_timestamp_u64(); /* Retrieve poll reception timestamp. */
@@ -137,7 +147,9 @@ int DWM1000_Anchor::sendRespMsg() {
   dwt_setdelayedtrxtime(resp_tx_time);
   dwt_setrxaftertxdelay(RESP_TX_TO_FINAL_RX_DLY_UUS);
   dwt_setrxtimeout(FINAL_RX_TIMEOUT_UUS);
+  _delta = Sys::micros() - interruptReceived;
   if (dwt_starttx(DWT_START_TX_DELAYED | DWT_RESPONSE_EXPECTED) < 0) {
+    _txErrors++;
     return -1;
   }
   return 0;
@@ -145,7 +157,7 @@ int DWM1000_Anchor::sendRespMsg() {
 
 //===================================================================================
 
-void DWM1000_Anchor::calcFinalMsg() {
+void IRAM_ATTR DWM1000_Anchor::calcFinalMsg() {
   uint32 poll_tx_ts, resp_rx_ts, final_tx_ts;
   uint32 poll_rx_ts_32, resp_tx_ts_32, final_rx_ts_32;
   double Ra, Rb, Da, Db;
@@ -181,7 +193,7 @@ void DWM1000_Anchor::calcFinalMsg() {
 
 //===================================================================================
 
-FrameType DWM1000_Anchor::readMsg(const dwt_callback_data_t* signal) {
+FrameType IRAM_ATTR DWM1000_Anchor::readMsg(const dwt_callback_data_t* signal) {
   uint32_t frameLength = signal->datalength;
   if (frameLength <= sizeof(_dwmMsg)) {
     dwt_readrxdata(_dwmMsg.buffer, frameLength, 0);
@@ -227,7 +239,7 @@ void DWM1000_Anchor::update(uint16_t src, uint8_t sequence) {
   _lastSequence = sequence;
 }
 
-void DWM1000_Anchor::FSM(const dwt_callback_data_t* signal) {
+void IRAM_ATTR DWM1000_Anchor::FSM(const dwt_callback_data_t* signal) {
   static uint32_t _ptLine;
   PT_BEGIN();
 WAIT_RXD : {
@@ -253,7 +265,6 @@ WAIT_RXD : {
     } else if (signal->event == DWT_SIG_RX_TIMEOUT) {
       if (_blinkTimer.expired()) {
         sendBlinkMsg();
-        _blinks++;
         _blinkTimer.reset();
       }
     } else if (signal->event == DWT_SIG_TX_DONE) {
@@ -291,30 +302,71 @@ WAIT_FINAL : {
 
 //_________________________________________________ IRQ handler
 
-void DWM1000_Anchor::rxcallback(const dwt_callback_data_t* signal) {
+void IRAM_ATTR DWM1000_Anchor::rxcallback(const dwt_callback_data_t* signal) {
   _anchor->_interrupts++;
+
   _anchor->FSM(signal);
 }
 
-void DWM1000_Anchor::txcallback(const dwt_callback_data_t* signal) {
+void IRAM_ATTR DWM1000_Anchor::txcallback(const dwt_callback_data_t* signal) {
   _anchor->_interrupts++;
   _anchor->FSM(signal);
 }
 
 static const char* role = "A";
 
+// TASK to handle ISR's
+void IRAM_ATTR dwm1000AnchorTask(void* pvParameter) {
+  uint32_t oldInterrupts = 0;
+  DWM1000_Anchor* anchor = (DWM1000_Anchor*)pvParameter;
+  INFO("Task started.");
+  uint32_t ulNotificationValue;
+  const TickType_t xMaxBlockTime = pdMS_TO_TICKS(200);
+
+  while (true) {
+    ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
+    anchor->_delta1 = Sys::micros() - interruptReceived;
+    if (ulNotificationValue == 1) {
+      dwt_isr();
+    } else { /* The call to ulTaskNotifyTake() timed out. */
+      anchor->sendBlinkMsg();
+    }
+    if (oldInterrupts == anchor->_interrupts) {
+      anchor->_sys_mask = dwt_read32bitreg(SYS_MASK_ID);
+      anchor->_sys_status = dwt_read32bitreg(SYS_STATUS_ID);
+      anchor->_sys_state = dwt_read32bitreg(SYS_STATE_ID);
+      dwt_setrxtimeout(60000);
+      dwt_rxenable(0);
+    };
+    if (anchor->_irq.read()) dwt_isr();
+    oldInterrupts = anchor->_interrupts;
+  }
+}
+// irq received from DWM1000 - awake task. This is needed as SPI comm is not
+// possible from ISR
+
+void IRAM_ATTR DWM1000_Anchor::interruptAwake(void* v) {
+  interruptReceived = Sys::micros();
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  DWM1000_Anchor* pAnchor = (DWM1000_Anchor*)v;
+  vTaskNotifyGiveFromISR(pAnchor->_isrTask, &xHigherPriorityTaskWoken);
+}
+
 //===================================================================================
 void DWM1000_Anchor::setup() {
-  //_________________________________________________INIT SPI ESP8266
-
-  DWM1000::setup();
   INFO("DWM1000 ANCHOR started.");
+  // Prepare interrupt handler task
+  INFO(" normal task priority : %d", uxTaskPriorityGet(NULL));
+  xTaskCreatePinnedToCore(&dwm1000AnchorTask, "isrTask", 4096, this, 27,
+                          &_isrTask, 1);
+  // xTaskCreate(&dwm1000AnchorTask, "isrTask", 4096, this, 27, &_isrTask);
+  DWM1000::onInterrupt(interruptAwake, this);
+  DWM1000::setup();
+
   dwt_setcallbacks(txcallback, rxcallback);
   dwt_setdblrxbuffmode(false);
   dwt_enableframefilter(DWT_FF_DATA_EN | DWT_FF_BEACON_EN);
   dwt_setinterrupt(DWT_INT_RFCG | DWT_INT_RFTO, 1);  // enable
-
- 
 
   /* Set expected response's delay and timeout. See NOTE 4 and 5 below.
    * As this example only handles one incoming frame with always the same delay
@@ -326,22 +378,23 @@ void DWM1000_Anchor::setup() {
 
   eb.onDst(id()).call(this);
   timeout(5000);
-  Property<const char*>::build(role, id(), H("role"), 20000);
-  Property<uint32_t>::build(_interrupts, id(), H("interrupts"), 1000);
-  Property<uint32_t>::build(_polls, id(), H("polls"), 1000);
-  Property<uint32_t>::build(_resps, id(), H("responses"), 1000);
-  Property<uint32_t>::build(_finals, id(), H("finals"), 1000);
-  Property<uint32_t>::build(_blinks, id(), H("blinks"), 1000);
-  distanceProp = Property<float>::build(_distance, id(), H("distance"), 1000);
+  Property<const char*>::build(role, id(), "role", 20000);
+  Property<uint32_t>::build(_interrupts, id(), "interrupts", 1000);
+  Property<uint32_t>::build(_polls, id(), "polls", 1000);
+  Property<uint32_t>::build(_resps, id(), "responses", 1000);
+  Property<uint32_t>::build(_finals, id(), "finals", 1000);
+  Property<uint32_t>::build(_blinks, id(), "blinks", 1000);
+  Property<uint32_t>::build(_txErrors, id(), "txErrors", 1000);
+  Property<uint32_t>::build(_delta, id(), "delta", 1000);
+  Property<uint32_t>::build(_delta1, id(), "delta1", 1000);
+  distanceProp = Property<float>::build(_distance, id(), "distance", 1000);
 }
 
 uint64_t _startTime;
 
 void DWM1000_Anchor::onEvent(Cbor& msg) {
-  static uint32_t oldInterrupts;
-  uint32_t sys_mask, sys_status, sys_state;
   static uint32_t oldFinals = 0;
-  int erc;
+  // int erc;
 
   PT_BEGIN()
 
@@ -351,24 +404,25 @@ INIT : {
   dwt_setrxtimeout(0);
   dwt_rxenable(0);
   timeout(1000);
-  oldInterrupts = _interrupts;
   PT_YIELD_UNTIL(timeout());
 }
 ENABLE : {
   while (true) {
     timeout(1000);
     PT_YIELD_UNTIL(timeout());
-    if (oldInterrupts == _interrupts) {
-      sys_mask = dwt_read32bitreg(SYS_MASK_ID);
-      sys_status = dwt_read32bitreg(SYS_STATUS_ID);
-      sys_state = dwt_read32bitreg(SYS_STATE_ID);
-      INFO(" SYS_MASK : %X SYS_STATUS : %X SYS_STATE: %X state : %s IRQ : %d",
-           sys_mask, sys_status, sys_state, uid.label(_state), _irq.read());
-      WARN(" enable RXD ");
-      dwt_setrxtimeout(60000);
-      dwt_rxenable(0);
-    }
-    oldInterrupts = _interrupts;
+    /*   if (oldInterrupts == _interrupts) {
+         sys_mask = dwt_read32bitreg(SYS_MASK_ID);
+         sys_status = dwt_read32bitreg(SYS_STATUS_ID);
+         sys_state = dwt_read32bitreg(SYS_STATE_ID);
+
+         WARN(" enable RXD ");
+         dwt_setrxtimeout(60000);
+         dwt_rxenable(0);
+       };
+       oldInterrupts = _interrupts;
+       if (_irq.read()) dwt_isr();*/
+    INFO(" SYS_MASK : %X SYS_STATUS : %X SYS_STATE: %X state : %s IRQ :%d",
+         _sys_mask, _sys_status, _sys_state, uid.label(_state), _irq.read());
 
     INFO(
         " interrupts : %d blinks : %d polls : %d resps : %d finals :%d heap : "
@@ -389,11 +443,7 @@ ENABLE : {
   goto ENABLE;
 }
 
-void DWM1000_Anchor::loop() {
-  /*   if ( digitalRead(DWM_PIN_IRQ)) {
-         dwt_isr();
-     }*/
-}
+void DWM1000_Anchor::loop() {}
 
 /*!
  * ------------------------------------------------------------------------------------------------------------------
@@ -407,7 +457,7 @@ void DWM1000_Anchor::loop() {
  *
  * @return  64-bit value of the read time-stamp.
  */
-static uint64 get_tx_timestamp_u64(void) {
+static uint64 IRAM_ATTR get_tx_timestamp_u64(void) {
   uint8 ts_tab[5];
   uint64 ts = 0;
   int i;
@@ -431,7 +481,7 @@ static uint64 get_tx_timestamp_u64(void) {
  *
  * @return  64-bit value of the read time-stamp.
  */
-static uint64 get_rx_timestamp_u64(void) {
+static uint64 IRAM_ATTR get_rx_timestamp_u64(void) {
   uint8 ts_tab[5];
   uint64 ts = 0;
   int i;
@@ -447,16 +497,16 @@ static uint64 get_rx_timestamp_u64(void) {
  * ------------------------------------------------------------------------------------------------------------------
  * @fn final_msg_get_ts()
  *
- * @brief Read a given timestamp value from the final message. In the timestamp
- * fields of the final message, the least significant byte is at the lower
- * address.
+ * @brief Read a given timestamp value from the final message. In the
+ * timestamp fields of the final message, the least significant byte is at the
+ * lower address.
  *
  * @param  ts_field  pointer on the first byte of the timestamp field to read
  *         ts  timestamp value
  *
  * @return none
  */
-static void final_msg_get_ts(const uint8* ts_field, uint32* ts) {
+static void IRAM_ATTR final_msg_get_ts(const uint8* ts_field, uint32* ts) {
   int i;
   *ts = 0;
   for (i = 0; i < FINAL_MSG_TS_LEN; i++) {
@@ -469,9 +519,9 @@ static void final_msg_get_ts(const uint8* ts_field, uint32* ts) {
  *
  * 1. The sum of the values is the TX to RX antenna delay, experimentally
  *determined by a calibration process. Here we use a hard coded typical value
- *    but, in a real application, each device should have its own antenna delay
- *properly calibrated to get the best possible precision when performing range
- *measurements.
+ *    but, in a real application, each device should have its own antenna
+ *delay properly calibrated to get the best possible precision when performing
+ *range measurements.
  * 2. The messages here are similar to those used in the DecaRanging ARM
  *application (shipped with EVK1000 kit). They comply with the IEEE 802.15.4
  *standard MAC data frame encoding and they are following the
@@ -480,18 +530,18 @@ static void final_msg_get_ts(const uint8* ts_field, uint32* ts) {
  *     - a response message sent by the responder allowing the initiator to go
  *on with the process
  *     - a final message sent by the initiator to complete the exchange and
- *provide all information needed by the responder to compute the time-of-flight
- *(distance) estimate. The first 10 bytes of those frame are common and
- *are composed of the following fields:
+ *provide all information needed by the responder to compute the
+ *time-of-flight (distance) estimate. The first 10 bytes of those frame are
+ *common and are composed of the following fields:
  *     - byte 0/1: frame control (0x8841 to indicate a data frame using 16-bit
  *addressing).
  *     - byte 2: sequence number, incremented for each new frame.
  *     - byte 3/4: PAN ID (0xDECA).
  *     - byte 5/6: destination address, see NOTE 3 below.
  *     - byte 7/8: source address, see NOTE 3 below.
- *     - byte 9: function code (specific values to indicate which message it is
- *in the ranging process). The remaining bytes are specific to each message as
- *follows: Poll message:
+ *     - byte 9: function code (specific values to indicate which message it
+ *is in the ranging process). The remaining bytes are specific to each message
+ *as follows: Poll message:
  *     - no more data
  *    Response message:
  *     - byte 10: activity code (0x02 to tell the initiator to go on with the
@@ -502,12 +552,12 @@ static void final_msg_get_ts(const uint8* ts_field, uint32* ts) {
  *     - byte 14 -> 17: response message reception timestamp.
  *     - byte 18 -> 21: final message transmission timestamp.
  *    All messages end with a 2-byte checksum automatically set by DW1000.
- * 3. Source and destination addresses are hard coded constants in this example
- *to keep it simple but for a real product every device should have a unique ID.
- *Here, 16-bit addressing is used to keep the messages as short as possible
- *but, in an actual application, this should be done only after an exchange of
- *specific messages used to define those short addresses for each device
- *participating to the ranging exchange.
+ * 3. Source and destination addresses are hard coded constants in this
+ *example to keep it simple but for a real product every device should have a
+ *unique ID. Here, 16-bit addressing is used to keep the messages as short as
+ *possible but, in an actual application, this should be done only after an
+ *exchange of specific messages used to define those short addresses for each
+ *device participating to the ranging exchange.
  * 4. Delays between frames have been chosen here to ensure proper
  *synchronisation of transmission and reception of the frames between the
  *initiator and the responder and to ensure a correct accuracy of the computed
@@ -525,12 +575,13 @@ static void final_msg_get_ts(const uint8* ts_field, uint32* ts) {
  * 7. We use polled mode of operation here to keep the example as simple as
  *possible but all status events can be used to generate interrupts. Please
  *    refer to DW1000 User Manual for more details on "interrupts". It is also
- *to be noted that STATUS register is 5 bytes long but, as the event we use are
- *all in the first bytes of the register, we can use the simple
- *dwt_read32bitreg() API call to access it instead of reading the whole 5 bytes.
- * 8. Timestamps and delayed transmission time are both expressed in device time
- *units so we just have to add the desired response delay to poll RX timestamp
- *to get response transmission time. The delayed transmission time
+ *to be noted that STATUS register is 5 bytes long but, as the event we use
+ *are all in the first bytes of the register, we can use the simple
+ *dwt_read32bitreg() API call to access it instead of reading the whole 5
+ *bytes.
+ * 8. Timestamps and delayed transmission time are both expressed in device
+ *time units so we just have to add the desired response delay to poll RX
+ *timestamp to get response transmission time. The delayed transmission time
  *resolution is 512 device time units which means that the lower 9 bits of the
  *obtained value must be zeroed. This also allows to encode the 40-bit value
  *in a 32-bit words by shifting the all-zero lower 8 bits.
@@ -547,11 +598,12 @@ static void final_msg_get_ts(const uint8* ts_field, uint32* ts) {
  *error code returned by dwt_starttx() API call. Here it is not tested, as
  *the values of the delays between frames have been carefully defined to avoid
  *this situation.
- * 10. The high order byte of each 40-bit time-stamps is discarded here. This is
- *acceptable as, on each device, those time-stamps are not separated by more
- *than 2**32 device time units (which is around 67 ms) which means that the
- *calculation of the round-trip delays can be handled by a 32-bit subtraction.
+ * 10. The high order byte of each 40-bit time-stamps is discarded here. This
+ *is acceptable as, on each device, those time-stamps are not separated by
+ *more than 2**32 device time units (which is around 67 ms) which means that
+ *the calculation of the round-trip delays can be handled by a 32-bit
+ *subtraction.
  * 11. The user is referred to DecaRanging ARM application (distributed with
- *EVK1000 product) for additional practical example of usage, and to the DW1000
- *API Guide for more details on the DW1000 driver functions.
+ *EVK1000 product) for additional practical example of usage, and to the
+ *DW1000 API Guide for more details on the DW1000 driver functions.
  ****************************************************************************************************************************************************/

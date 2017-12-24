@@ -1,5 +1,6 @@
 
 
+#include <Config.h>
 #include <EventBus.h>
 #include <Mqtt.h>
 
@@ -11,7 +12,12 @@ Mqtt::Mqtt(const char *name)
       _port(1883),
       _user(USER_LENGTH),
       _password(PASSWORD_LENGTH),
-      _clientId(CLIENT_ID_LENGTH) {
+      _clientId(CLIENT_ID_LENGTH),
+      _willTopic(30),
+      _willMessage(30),
+      _willQos(0),
+      _willRetain(false),
+      _keepAlive(20) {
   _me = this;
   _connected = false;
 }
@@ -64,6 +70,18 @@ void Mqtt::onMessageReceived(const char *topic, uint8_t *payload,
 }
 
 void Mqtt::setup() {
+  config.setNameSpace("mqtt");
+  config.get("host", _host, "limero.ddns.net");
+  config.get("port", _port, 1883);
+  _clientId = Sys::hostname();
+  config.get("user", _user, "");
+  config.get("password", _password, "");
+  _willTopic = "src/";
+  _willTopic += Sys::hostname();
+  _willTopic += "/system/alive";
+  //    config.get("mqtt.willTopic",_willTopic,_willTopic.c_str());
+  config.get("willMessage", _willMessage, "false");
+  config.get("keepAlive", _keepAlive, 20);
   esp_mqtt_init(onStatusChange, onMessage, 256, 2000);
   eb.onDst(id()).call(this);
   eb.onSrc(_wifi).call(this);
