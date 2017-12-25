@@ -114,6 +114,7 @@ DWM1000_Anchor::DWM1000_Anchor(const char* name, SPI& spi, DigitalIn& irq,
   _state = RCV_ANY;
   _txErrors = 0;
   _delta = 0;
+  _dropped = 0;
 }
 
 DWM1000_Anchor::~DWM1000_Anchor() {}
@@ -134,7 +135,7 @@ void IRAM_ATTR DWM1000_Anchor::sendBlinkMsg() {
 
 int IRAM_ATTR DWM1000_Anchor::sendRespMsg() {
   uint32 resp_tx_time;
-
+  _delta1 = Sys::micros() - interruptReceived;
   poll_rx_ts = get_rx_timestamp_u64(); /* Retrieve poll reception timestamp. */
 
   /* Set send time for response. See NOTE 8 below. */
@@ -234,7 +235,8 @@ FrameType IRAM_ATTR DWM1000_Anchor::readMsg(const dwt_callback_data_t* signal) {
 //===================================================================================
 void DWM1000_Anchor::update(uint16_t src, uint8_t sequence) {
   if (sequence > (_lastSequence + 1)) {
-    WARN("dropped frames : %d", sequence - _lastSequence - 1);
+    _dropped++;
+    //   WARN("dropped frames : %d", sequence - _lastSequence - 1);
   }
   _lastSequence = sequence;
 }
@@ -303,13 +305,10 @@ WAIT_FINAL : {
 //_________________________________________________ IRQ handler
 
 void IRAM_ATTR DWM1000_Anchor::rxcallback(const dwt_callback_data_t* signal) {
-  _anchor->_interrupts++;
-
   _anchor->FSM(signal);
 }
 
 void IRAM_ATTR DWM1000_Anchor::txcallback(const dwt_callback_data_t* signal) {
-  _anchor->_interrupts++;
   _anchor->FSM(signal);
 }
 
@@ -322,10 +321,13 @@ void IRAM_ATTR dwm1000AnchorTask(void* pvParameter) {
   INFO("Task started.");
   uint32_t ulNotificationValue;
   const TickType_t xMaxBlockTime = pdMS_TO_TICKS(200);
+  dwt_setautorxreenable(true);
+  dwt_setrxtimeout(0);
+  dwt_rxenable(0);
 
   while (true) {
     ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
-    anchor->_delta1 = Sys::micros() - interruptReceived;
+
     if (ulNotificationValue == 1) {
       dwt_isr();
     } else { /* The call to ulTaskNotifyTake() timed out. */
@@ -348,18 +350,15 @@ void IRAM_ATTR dwm1000AnchorTask(void* pvParameter) {
 void IRAM_ATTR DWM1000_Anchor::interruptAwake(void* v) {
   interruptReceived = Sys::micros();
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-  DWM1000_Anchor* pAnchor = (DWM1000_Anchor*)v;
-  vTaskNotifyGiveFromISR(pAnchor->_isrTask, &xHigherPriorityTaskWoken);
+  DWM1000_Anchor* anchor = (DWM1000_Anchor*)v;
+  anchor->_interrupts++;
+  vTaskNotifyGiveFromISR(anchor->_isrTask, &xHigherPriorityTaskWoken);
 }
 
 //===================================================================================
 void DWM1000_Anchor::setup() {
   INFO("DWM1000 ANCHOR started.");
-  // Prepare interrupt handler task
-  INFO(" normal task priority : %d", uxTaskPriorityGet(NULL));
-  xTaskCreatePinnedToCore(&dwm1000AnchorTask, "isrTask", 4096, this, 27,
-                          &_isrTask, 1);
-  // xTaskCreate(&dwm1000AnchorTask, "isrTask", 4096, this, 27, &_isrTask);
+
   DWM1000::onInterrupt(interruptAwake, this);
   DWM1000::setup();
 
@@ -367,6 +366,12 @@ void DWM1000_Anchor::setup() {
   dwt_setdblrxbuffmode(false);
   dwt_enableframefilter(DWT_FF_DATA_EN | DWT_FF_BEACON_EN);
   dwt_setinterrupt(DWT_INT_RFCG | DWT_INT_RFTO, 1);  // enable
+
+  // Prepare interrupt handler task
+  INFO(" normal task priority : %d", uxTaskPriorityGet(NULL));
+  xTaskCreatePinnedToCore(&dwm1000AnchorTask, "isrTask", 4096, this, 27,
+                          &_isrTask, 1);
+  // xTaskCreate(&dwm1000AnchorTask, "isrTask", 4096, this, 27, &_isrTask);
 
   /* Set expected response's delay and timeout. See NOTE 4 and 5 below.
    * As this example only handles one incoming frame with always the same delay
@@ -387,6 +392,7 @@ void DWM1000_Anchor::setup() {
   Property<uint32_t>::build(_txErrors, id(), "txErrors", 1000);
   Property<uint32_t>::build(_delta, id(), "delta", 1000);
   Property<uint32_t>::build(_delta1, id(), "delta1", 1000);
+  Property<uint32_t>::build(_dropped, id(), "missed", 1000);
   distanceProp = Property<float>::build(_distance, id(), "distance", 1000);
 }
 
@@ -394,15 +400,11 @@ uint64_t _startTime;
 
 void DWM1000_Anchor::onEvent(Cbor& msg) {
   static uint32_t oldFinals = 0;
-  // int erc;
-
   PT_BEGIN()
 
 INIT : {
   _blinkTimer.reset();
-  dwt_setautorxreenable(true);
-  dwt_setrxtimeout(0);
-  dwt_rxenable(0);
+
   timeout(1000);
   PT_YIELD_UNTIL(timeout());
 }
@@ -410,17 +412,7 @@ ENABLE : {
   while (true) {
     timeout(1000);
     PT_YIELD_UNTIL(timeout());
-    /*   if (oldInterrupts == _interrupts) {
-         sys_mask = dwt_read32bitreg(SYS_MASK_ID);
-         sys_status = dwt_read32bitreg(SYS_STATUS_ID);
-         sys_state = dwt_read32bitreg(SYS_STATE_ID);
 
-         WARN(" enable RXD ");
-         dwt_setrxtimeout(60000);
-         dwt_rxenable(0);
-       };
-       oldInterrupts = _interrupts;
-       if (_irq.read()) dwt_isr();*/
     INFO(" SYS_MASK : %X SYS_STATUS : %X SYS_STATE: %X state : %s IRQ :%d",
          _sys_mask, _sys_status, _sys_state, uid.label(_state), _irq.read());
 

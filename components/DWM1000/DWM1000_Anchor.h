@@ -30,6 +30,7 @@ class DWM1000_Anchor : public Actor, public DWM1000 {
   uint32_t _sys_state;
   uint32_t _delta1;
   uint32_t _delta;
+  uint32_t _dropped;
 
  private:
   uint8_t _lastSequence;

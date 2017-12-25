@@ -82,7 +82,7 @@ extern "C" void spi_set_rate_low() {
 extern "C" void spi_set_rate_high() {
   INFO(" spi_set_rate_high() %X", _gSpi);
   _gSpi->deInit();
-  _gSpi->setClock(10000000);
+  _gSpi->setClock(8000000);
   _gSpi->init();
 }
 
