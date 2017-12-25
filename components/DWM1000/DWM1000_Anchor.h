@@ -25,12 +25,15 @@ class DWM1000_Anchor : public Actor, public DWM1000 {
   uint32_t _errs;
   uint32_t _missed;
   uint32_t _txErrors;
+  uint32_t _rxErrors;
   uint32_t _sys_mask;
   uint32_t _sys_status;
   uint32_t _sys_state;
   uint32_t _delta1;
   uint32_t _delta;
-  uint32_t _dropped;
+  uint32_t _framesMissed;
+  uint32_t _framesUnknown;
+  uint32_t _framesTooLong;
 
  private:
   uint8_t _lastSequence;

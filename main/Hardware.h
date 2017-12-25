@@ -29,25 +29,20 @@ class Driver {
 };
 
 class UART : public Driver {
-  FunctionPointer _onRxd;
-  FunctionPointer _onTxd;
-  void* _onRxdVoid;
-  void* _onTxdVoid;
-
  public:
-  UART(uint32_t);
-  UART(PhysicalPin txd, PhysicalPin rxd);
-  Erc init();
-  Erc deInit();
+  static UART& create(PhysicalPin txd, PhysicalPin rxd);
+  virtual Erc init() = 0;
+  virtual Erc deInit() = 0;
+  virtual Erc setClock(uint32_t clock) = 0;
 
-  Erc write(const uint8_t* data, uint32_t length);
-  Erc write(uint8_t b);
-  Erc read(Bytes& bytes);
-  uint8_t read();
-  void onRxd(FunctionPointer, void*);
-  void onTxd(FunctionPointer, void*);
-  uint32_t hasSpace();
-  uint32_t hasData();
+  virtual Erc write(const uint8_t* data, uint32_t length) = 0;
+  virtual Erc write(uint8_t b) = 0;
+  virtual Erc read(Bytes& bytes) = 0;
+  virtual uint8_t read() = 0;
+  virtual void onRxd(FunctionPointer, void*) = 0;
+  virtual void onTxd(FunctionPointer, void*) = 0;
+  virtual uint32_t hasSpace() = 0;
+  virtual uint32_t hasData() = 0;
 };
 
 //===================================================== GPIO DigitalIn ========

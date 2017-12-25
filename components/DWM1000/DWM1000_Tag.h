@@ -12,7 +12,10 @@
 #include <EventBus.h>
 #include <Hardware.h>
 #include <Log.h>
+#include <error_handler.h>
 #include <map.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #define ANCHOR_EXPIRE_TIME 10000
 class RemoteAnchor {
@@ -52,7 +55,18 @@ class RemoteAnchor {
 };
 
 class DWM1000_Tag : public Actor, public DWM1000 {
+ public:
+  uint32_t _sys_mask;
+  uint32_t _sys_status;
+  uint32_t _sys_state;
   uint32_t _count;
+  uint32_t _delta1;
+  uint32_t _delta;
+  uint32_t _framesMissed;
+  uint32_t _framesUnknown;
+  uint32_t _framesTooLong;
+  uint32_t _txErrors;
+  uint32_t _rxErrors;
 
   static DWM1000_Tag* _tag;
   uint32_t _interrupts;
@@ -84,6 +98,7 @@ class DWM1000_Tag : public Actor, public DWM1000 {
   uint16_t _currentAnchor;
   State _state;
   Timeout _pollTimer;
+  TaskHandle_t _isrTask;
 
  public:
   DWM1000_Tag(const char* name, SPI&, DigitalIn&, DigitalOut&);
@@ -112,6 +127,7 @@ class DWM1000_Tag : public Actor, public DWM1000 {
   bool pollAnchors();
   void handleBlinkMsg();
   void handleRespMsg();
+  static void interruptAwake(void*);
 
  private:
 };

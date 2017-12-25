@@ -410,6 +410,45 @@ SPI& SPI::create(PhysicalPin miso, PhysicalPin mosi, PhysicalPin sck,
 }
 
 /*
+                            @     @    @    @@@@@@  @@@@@@@
+                            @     @   @ @   @     @    @
+                            @     @  @   @  @     @    @
+                            @     @ @     @ @@@@@@     @
+                            @     @ @@@@@@@ @   @      @
+                            @     @ @     @ @    @     @
+                             @@@@@  @     @ @     @    @
+
+*/
+
+class UART_ESP32 : public UART {
+  FunctionPointer _onRxd;
+  FunctionPointer _onTxd;
+  void* _onRxdVoid;
+  void* _onTxdVoid;
+  uint32_t clock;
+
+ public:
+  UART_ESP32(PhysicalPin txd, PhysicalPin rxd);
+  Erc init() { return E_OK; };
+  Erc deInit() { return E_OK; };
+  Erc setClock(uint32_t clock) { return E_OK; };
+
+  Erc write(const uint8_t* data, uint32_t length) { return E_OK; };
+  Erc write(uint8_t b) { return E_OK; };
+  Erc read(Bytes& bytes) { return E_OK; };
+  uint8_t read() { return E_OK; };
+  void onRxd(FunctionPointer, void*) { return; };
+  void onTxd(FunctionPointer, void*) { return; };
+  uint32_t hasSpace() { return E_OK; };
+  uint32_t hasData() { return E_OK; };
+};
+
+UART& UART::create(PhysicalPin txd, PhysicalPin rxd) {
+  UART_ESP32* ptr = new UART_ESP32(txd, rxd);
+  return *ptr;
+}
+
+/*
  #####
 #     #   ####   #    #  #    #  ######   ####    #####   ####   #####
 #        #    #  ##   #  ##   #  #       #    #     #    #    #  #    #
@@ -463,7 +502,7 @@ PhysicalPin Connector::toPin(uint32_t logicalPin) {
 UART& Connector::getUART() {
   lockPin(LP_TXD);
   lockPin(LP_RXD);
-  _uart = new UART(toPin(LP_TXD), toPin(LP_RXD));
+  _uart = new UART_ESP32(toPin(LP_TXD), toPin(LP_RXD));
   return *_uart;
 };
 
@@ -531,16 +570,3 @@ void Connector::lockPin(LogicalPin lp) {
 
 
 */
-/*
-Uart& getUart() {
-    lockPin(LP_TXD);
-    lockPin(LP_RXD);
-    return Uart(LP_TXD, LP_RXD);
-  };
-  void freeUart();
-  Spi& getSpi() { return Spi(LP_MISO, LP_MOSI, LP_SCK, LP_CS); };
-  I2C& getI2C() {
-    lockPin(LP_SDA);
-    lockPin(LP_SCL);
-    return I2C(LP_SDA, LP_SCL);
-  };*/

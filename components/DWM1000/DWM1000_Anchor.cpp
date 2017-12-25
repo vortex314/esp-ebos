@@ -71,7 +71,7 @@ typedef signed long long int64;
 static uint64 poll_rx_ts;
 static uint64 resp_tx_ts;
 static uint64 final_rx_ts;
-uint64_t interruptReceived;
+static uint64_t interruptReceived;
 
 /* Speed of light in air, in metres per second. */
 #define SPEED_OF_LIGHT 299702547
@@ -87,7 +87,7 @@ static uint64 get_rx_timestamp_u64(void);
 static void final_msg_get_ts(const uint8* ts_field, uint32* ts);
 
 Property<float>* distanceProp = 0;
-
+/*
 Str strLogAnchor(100);
 
 void logAnchor(const char* s, uint32_t state, uint8_t* buffer,
@@ -95,7 +95,7 @@ void logAnchor(const char* s, uint32_t state, uint8_t* buffer,
   strLogAnchor.clear();
   strLogAnchor.appendHex(buffer, length, ':');
   INFO("%s %s %s", s, uid.label(state), strLogAnchor.c_str());
-}
+}*/
 DWM1000_Anchor* DWM1000_Anchor::_anchor;
 
 DWM1000_Anchor::DWM1000_Anchor(const char* name, SPI& spi, DigitalIn& irq,
@@ -114,7 +114,9 @@ DWM1000_Anchor::DWM1000_Anchor(const char* name, SPI& spi, DigitalIn& irq,
   _state = RCV_ANY;
   _txErrors = 0;
   _delta = 0;
-  _dropped = 0;
+  _framesMissed = 0;
+  _framesTooLong = 0;
+  _framesUnknown = 0;
 }
 
 DWM1000_Anchor::~DWM1000_Anchor() {}
@@ -126,7 +128,7 @@ void IRAM_ATTR DWM1000_Anchor::sendBlinkMsg() {
   dwt_writetxfctrl(sizeof(_blinkMsg), 0);
   erc = dwt_starttx(DWT_START_TX_IMMEDIATE);
   if (erc < 0) {
-    WARN("BLINK TXD FAILED");
+    //    WARN("BLINK TXD FAILED");
     _txErrors++;
   };
   _blinks++;
@@ -202,32 +204,22 @@ FrameType IRAM_ATTR DWM1000_Anchor::readMsg(const dwt_callback_data_t* signal) {
     FrameType ft = DWM1000::getFrameType(_dwmMsg);
     if (ft == FT_BLINK) {
       memcpy(_blinkMsg.buffer, _dwmMsg.buffer, sizeof(_blinkMsg));
-      //           INFO(" blink %X : %d :
-      //           %s",_blinkMsg.getSrc(),_blinkMsg.sequence,uid.label(_state));
       _blinks++;
     } else if (ft == FT_POLL) {
       memcpy(_pollMsg.buffer, _dwmMsg.buffer, sizeof(_pollMsg));
-      //            INFO(" poll %X : %d :
-      //            %s",_pollMsg.getSrc(),_pollMsg.sequence,uid.label(_state));
       _polls++;
     } else if (ft == FT_RESP) {
       memcpy(_respMsg.buffer, _dwmMsg.buffer, sizeof(_respMsg));
-      //           INFO(" resp %X : %d : %s
-      //           ",_respMsg.getSrc(),_respMsg.sequence,uid.label(_state));
       _resps++;
     } else if (ft == FT_FINAL) {
       memcpy(_finalMsg.buffer, _dwmMsg.buffer, sizeof(_finalMsg));
-      //            INFO(" final %X : %d :
-      //            %s",_finalMsg.getSrc(),_finalMsg.sequence,uid.label(_state));
       _finals++;
     } else {
-      //           INFO(" unknown frame type %X:%X :
-      //           %s",_dwmMsg.fc[0],_dwmMsg.fc[1],uid.label(_state));
+      _framesUnknown++;
     }
     return ft;
   } else {
-    //        INFO(" invalid length %d : hdr %X:%X :
-    //        %s",frameLength,_dwmMsg.fc[0],_dwmMsg.fc[1],uid.label(_state));
+    _framesTooLong++;
     return FT_UNKNOWN;
   }
 }
@@ -235,7 +227,7 @@ FrameType IRAM_ATTR DWM1000_Anchor::readMsg(const dwt_callback_data_t* signal) {
 //===================================================================================
 void DWM1000_Anchor::update(uint16_t src, uint8_t sequence) {
   if (sequence > (_lastSequence + 1)) {
-    _dropped++;
+    _framesMissed++;
     //   WARN("dropped frames : %d", sequence - _lastSequence - 1);
   }
   _lastSequence = sequence;
@@ -328,7 +320,7 @@ void IRAM_ATTR dwm1000AnchorTask(void* pvParameter) {
   while (true) {
     ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
 
-    if (ulNotificationValue == 1) {
+    if (ulNotificationValue) {
       dwt_isr();
     } else { /* The call to ulTaskNotifyTake() timed out. */
       anchor->sendBlinkMsg();
@@ -390,9 +382,12 @@ void DWM1000_Anchor::setup() {
   Property<uint32_t>::build(_finals, id(), "finals", 1000);
   Property<uint32_t>::build(_blinks, id(), "blinks", 1000);
   Property<uint32_t>::build(_txErrors, id(), "txErrors", 1000);
+  Property<uint32_t>::build(_rxErrors, id(), "rxErrors", 1000);
   Property<uint32_t>::build(_delta, id(), "delta", 1000);
   Property<uint32_t>::build(_delta1, id(), "delta1", 1000);
-  Property<uint32_t>::build(_dropped, id(), "missed", 1000);
+  Property<uint32_t>::build(_framesMissed, id(), "framesMissed", 1000);
+  Property<uint32_t>::build(_framesUnknown, id(), "framesUnknown", 1000);
+  Property<uint32_t>::build(_framesTooLong, id(), "framesTooLong", 1000);
   distanceProp = Property<float>::build(_distance, id(), "distance", 1000);
 }
 

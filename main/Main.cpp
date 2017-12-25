@@ -17,7 +17,12 @@
 #include <Property.h>
 //#include <cJSON.h>
 #include <Config.h>
+#include <DWM1000_Anchor.h>
+#include <DWM1000_Tag.h>
+
 #include <Mdns.h>
+#include <error_handler.h>
+#include <vector.h>
 
 Uid uid(200);
 EventBus eb(32000, 1024);
@@ -172,7 +177,6 @@ DigitalOut enable(32);
 ADC current(36);
 ADC position(33);
 Drive drive("drive", left, right, enable, current, position);
-#include <DWM1000_Anchor.h>
 
 //===============================================================================
 
@@ -295,6 +299,7 @@ DigitalIn irq(16);
 DigitalOut reset(17);
 
 DRAM_ATTR DWM1000_Anchor dwm1000Anchor("dwm1000", spi, irq, reset);
+DRAM_ATTR DWM1000_Tag dwm1000Tag("dwm1000", spi, irq, reset);
 
 MqttJson gateway("gateway", 1024);
 
@@ -305,8 +310,15 @@ void wait() {
   }
 }
 
+void free_error_handler(const etl::exception& e) {
+  ERROR("The error was %s in %s at %d ", e.what(), e.file_name(),
+        e.line_number());
+}
+
 extern "C" void setup() {
   // loadHardware();
+  etl::error_handler::free_function callback(free_error_handler);
+  etl::error_handler::set_callback(callback);
 
   config.load();
 
@@ -342,7 +354,24 @@ extern "C" void setup() {
   led.setMqtt(mqtt.id());
   led.setWifi(wifi.id());
 
-  dwm1000Anchor.setup();
+  Str role(10);
+  role = "T";
+  union {
+    uint8_t mac[8];
+    uint64_t _long;
+  };
+  memset(mac, 0, 8);
+  _long = Sys::getSerialId();
+
+  if (strcmp(role.c_str(), "T") == 0) {
+    dwm1000Tag.setShortAddress(Sys::getSerialId() & 0xFFFF);
+    dwm1000Tag.setLongAddress(mac);
+    dwm1000Tag.setup();
+  } else {  // otherwise an anchor
+    dwm1000Anchor.setShortAddress(Sys::getSerialId() & 0xFFFF);
+    dwm1000Anchor.setLongAddress(mac);
+    dwm1000Anchor.setup();
+  }
 
   // compass.setup();
   //  us.setup();
