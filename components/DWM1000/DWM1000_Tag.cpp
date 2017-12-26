@@ -65,14 +65,15 @@ DWM1000_Tag::DWM1000_Tag(const char* name, SPI& spi, DigitalIn& irq,
                          DigitalOut& reset)
     : Actor(name),
       DWM1000(spi, irq, reset),
+      _role(2),
+      _shortAddressString(5),
       _anchors(20),
       _panAddress(3),
       _pollTimer(300) {
+  _role = "T";
   _count = 0;
   _tag = this;
   _interrupts = 0;
-  _resps = 0;
-  _polls = 0;
   _txErrors = 0;
   _delta = 0;
   _framesMissed = 0;
@@ -83,6 +84,98 @@ DWM1000_Tag::DWM1000_Tag(const char* name, SPI& spi, DigitalIn& irq,
 }
 
 DWM1000_Tag::~DWM1000_Tag() {}
+
+// TASK to handle ISR's
+void IRAM_ATTR dwm1000TagTask(void* pvParameter) {
+  uint32_t timeoutCount = 0;
+  DWM1000_Tag* tag = (DWM1000_Tag*)pvParameter;
+  INFO("Task started.");
+  uint32_t ulNotificationValue;
+  const TickType_t xMaxBlockTime = pdMS_TO_TICKS(2000);
+  dwt_setautorxreenable(true);
+  dwt_setrxtimeout(0);
+  dwt_rxenable(0);
+
+  while (true) {
+    ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
+    tag->_delta1 = Sys::micros() - interruptReceived;
+    if (ulNotificationValue) {
+      timeoutCount = 0;
+      dwt_isr();
+    } else {
+      if (timeoutCount++ > 10) {  // no recent interrupts
+        tag->DWM1000::setup();    // full reset
+        ERROR(" DWM1000 full reset. ");
+      }
+      if (timeoutCount > 15) {
+        ERROR(" REBOOT ESP32 !!");
+        vTaskDelay(3000);
+        esp_restart();
+      }
+      tag->_sys_mask = dwt_read32bitreg(SYS_MASK_ID);
+      tag->_sys_status = dwt_read32bitreg(SYS_STATUS_ID);
+      tag->_sys_state = dwt_read32bitreg(SYS_STATE_ID);
+      dwt_setrxtimeout(60000);
+      dwt_rxenable(0);
+    }
+  }
+}
+
+// irq received from DWM1000 - awake task. This is needed as SPI comm is not
+// possible from ISR
+
+void IRAM_ATTR DWM1000_Tag::interruptAwake(void* v) {
+  interruptReceived = Sys::micros();
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+  DWM1000_Tag* tag = (DWM1000_Tag*)v;
+  tag->_interrupts++;
+  vTaskNotifyGiveFromISR(tag->_isrTask, &xHigherPriorityTaskWoken);
+}
+
+void DWM1000_Tag::setup() {
+  //_________________________________________________INIT SPI ESP8266
+  DWM1000::onInterrupt(interruptAwake, this);
+  DWM1000::setup();
+  _shortAddressString.appendHex(getShortAddress());
+  INFO("DWM1000 TAG started.");
+
+  dwt_setrxaftertxdelay(POLL_TX_TO_RESP_RX_DLY_UUS);
+
+  dwt_setcallbacks(txcallback, rxcallback);
+  dwt_setdblrxbuffmode(false);
+  dwt_setinterrupt(DWT_INT_RFCG | DWT_INT_RFTO, 1);  // enable
+
+  INFO(" normal task priority : %d", uxTaskPriorityGet(NULL));
+  xTaskCreatePinnedToCore(&dwm1000TagTask, "isrTask", 4096, this, 27, &_isrTask,
+                          1);
+
+  _count = 0;
+  timeout(5000);
+
+  new Prop<Str>(_shortAddressString, id(), "address", 20000);
+  new Prop<Str>(_role, id(), "role", 20000);
+  new Prop<uint32_t>(_interrupts, id(), "interrupts", 1000);
+  new Prop<uint32_t>(_pollsTxd, id(), "pollsTxd", 1000);
+  new Prop<uint32_t>(_pollsRxd, id(), "pollsRxd", 1000);
+  new Prop<uint32_t>(_respsTxd, id(), "responsesTxd", 1000);
+  new Prop<uint32_t>(_respsRxd, id(), "responsesRxd", 1000);
+  new Prop<uint32_t>(_finalsTxd, id(), "finalsTxd", 1000);
+  new Prop<uint32_t>(_finalsRxd, id(), "finalsRxd", 1000);
+  new Prop<uint32_t>(_blinksTxd, id(), "blinksTxd", 1000);
+  new Prop<uint32_t>(_blinksRxd, id(), "blinksRxd", 1000);
+  new Prop<uint32_t>(_distance, id(), "distance", 1000);
+  new Prop<uint32_t>(_txErrors, id(), "txErrors", 1000);
+  new Prop<uint32_t>(_rxErrors, id(), "rxErrors", 1000);
+  new Prop<uint32_t>(_delta, id(), "delta", 1000);
+  new Prop<uint32_t>(_delta1, id(), "delta1", 1000);
+  new Prop<uint32_t>(_framesMissed, id(), "framesMissed", 1000);
+  new Prop<uint32_t>(_framesUnknown, id(), "framesUnknown", 1000);
+  new Prop<uint32_t>(_framesTooLong, id(), "framesTooLong", 1000);
+  new Prop<uint32_t>(_framesUnexpected, id(), "framesUnexpect", 1000);
+  new Prop<uint32_t>(_respUnknown, id(), "responseUnknown", 1000);
+  new Prop<uint32_t>(_signalUnknown, id(), "signalUnknown", 1000);
+  new Prop<uint32_t>(_count, id(), "count", 1000);
+}
 
 int DWM1000_Tag::sendPollMsg() {
   dwt_writetxdata(sizeof(_pollMsg), _pollMsg.buffer, 0);
@@ -123,7 +216,7 @@ int DWM1000_Tag::sendFinalMsg() {
     _txErrors++;
     return -1;
   }
-  _finals++;
+  _finalsTxd++;
   return 0;  // SEND FINAL MSG
 }
 
@@ -216,18 +309,23 @@ void DWM1000_Tag::FSM(const dwt_callback_data_t* signal) {
             createFinalMsg(_finalMsg, _respMsg);
             sendFinalMsg();
           } else {
-            _rxErrors++;
+            _respUnknown++;
           }
           break;
         }
-        default: { _rxErrors++; }
+        case FT_FINAL:
+        case FT_POLL: {
+          _framesUnexpected++;
+          break;
+        }
+        default: {}  // _framesUnknown++;
       };
       break;
     };
     case DWT_SIG_RX_TIMEOUT: {
       if (_pollTimer.expired()) {
         if (pollAnchors()) {
-          _polls++;
+          _pollsTxd++;
         }
         _pollTimer.reset();
       }
@@ -236,7 +334,22 @@ void DWM1000_Tag::FSM(const dwt_callback_data_t* signal) {
     case DWT_SIG_TX_DONE: {
       break;
     }
-    default: { _rxErrors++; }
+    case DWT_SIG_RX_ERROR: {
+      _rxErrors++;
+      break;
+    }
+
+    case DWT_SIG_RX_PENDING: {
+      break;
+    }
+    case DWT_SIG_TX_ERROR: {
+      _txErrors++;
+      break;
+    }
+    case DWT_SIG_RX_NOERR: {
+      break;
+    }
+    default: { _signalUnknown++; }
   }
   dwt_write32bitreg(SYS_STATUS_ID,
                     SYS_STATUS_ALL_RX_GOOD | SYS_STATUS_ALL_RX_ERR);
@@ -262,16 +375,16 @@ FrameType DWM1000_Tag::readMsg(const dwt_callback_data_t* signal) {
     FrameType ft = DWM1000::getFrameType(_dwmMsg);
     if (ft == FT_BLINK) {
       memcpy(_blinkMsg.buffer, _dwmMsg.buffer, sizeof(_blinkMsg));
-      _blinks++;
+      _blinksRxd++;
     } else if (ft == FT_POLL) {
       memcpy(_pollMsg.buffer, _dwmMsg.buffer, sizeof(_pollMsg));
-      _polls++;
+      _pollsRxd++;
     } else if (ft == FT_RESP) {
       memcpy(_respMsg.buffer, _dwmMsg.buffer, sizeof(_respMsg));
-      _resps++;
+      _respsRxd++;
     } else if (ft == FT_FINAL) {
       memcpy(_finalMsg.buffer, _dwmMsg.buffer, sizeof(_finalMsg));
-      _finals++;
+      _finalsRxd++;
     } else {
       _framesUnknown++;
     }
@@ -280,81 +393,6 @@ FrameType DWM1000_Tag::readMsg(const dwt_callback_data_t* signal) {
     _framesTooLong++;
     return FT_UNKNOWN;
   }
-}
-
-static const char* role = "T";
-
-// TASK to handle ISR's
-void IRAM_ATTR dwm1000TagTask(void* pvParameter) {
-  uint32_t oldInterrupts = 0;
-  DWM1000_Tag* tag = (DWM1000_Tag*)pvParameter;
-  INFO("Task started.");
-  uint32_t ulNotificationValue;
-  const TickType_t xMaxBlockTime = pdMS_TO_TICKS(2000);
-  dwt_setautorxreenable(true);
-  dwt_setrxtimeout(0);
-  dwt_rxenable(0);
-
-  while (true) {
-    ulNotificationValue = ulTaskNotifyTake(pdTRUE, xMaxBlockTime);
-    tag->_delta1 = Sys::micros() - interruptReceived;
-    if (ulNotificationValue) {
-      dwt_isr();
-    } else {
-      tag->_sys_mask = dwt_read32bitreg(SYS_MASK_ID);
-      tag->_sys_status = dwt_read32bitreg(SYS_STATUS_ID);
-      tag->_sys_state = dwt_read32bitreg(SYS_STATE_ID);
-      dwt_setrxtimeout(60000);
-      dwt_rxenable(0);
-    }
-  }
-}
-
-// irq received from DWM1000 - awake task. This is needed as SPI comm is not
-// possible from ISR
-
-void IRAM_ATTR DWM1000_Tag::interruptAwake(void* v) {
-  interruptReceived = Sys::micros();
-  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-  DWM1000_Tag* tag = (DWM1000_Tag*)v;
-  tag->_interrupts++;
-  vTaskNotifyGiveFromISR(tag->_isrTask, &xHigherPriorityTaskWoken);
-}
-
-void DWM1000_Tag::setup() {
-  //_________________________________________________INIT SPI ESP8266
-  DWM1000::onInterrupt(interruptAwake, this);
-  DWM1000::setup();
-  INFO("DWM1000 TAG started.");
-
-  dwt_setrxaftertxdelay(POLL_TX_TO_RESP_RX_DLY_UUS);
-
-  dwt_setcallbacks(txcallback, rxcallback);
-  dwt_setdblrxbuffmode(false);
-  dwt_setinterrupt(DWT_INT_RFCG | DWT_INT_RFTO, 1);  // enable
-
-  INFO(" normal task priority : %d", uxTaskPriorityGet(NULL));
-  xTaskCreatePinnedToCore(&dwm1000TagTask, "isrTask", 4096, this, 27, &_isrTask,
-                          1);
-
-  _count = 0;
-  timeout(5000);
-
-  Property<const char*>::build(role, id(), "role", 20000);
-  Property<uint32_t>::build(_interrupts, id(), "interrupts", 1000);
-  Property<uint32_t>::build(_polls, id(), "polls", 1000);
-  Property<uint32_t>::build(_resps, id(), "responses", 1000);
-  Property<uint32_t>::build(_finals, id(), "finals", 1000);
-  Property<uint32_t>::build(_blinks, id(), "blinks", 1000);
-  Property<uint32_t>::build(_distance, id(), "distance", 1000);
-  Property<uint32_t>::build(_txErrors, id(), "txErrors", 1000);
-  Property<uint32_t>::build(_rxErrors, id(), "rxErrors", 1000);
-  Property<uint32_t>::build(_delta, id(), "delta", 1000);
-  Property<uint32_t>::build(_delta1, id(), "delta1", 1000);
-  Property<uint32_t>::build(_framesMissed, id(), "framesMissed", 1000);
-  Property<uint32_t>::build(_framesUnknown, id(), "framesUnknown", 1000);
-  Property<uint32_t>::build(_framesTooLong, id(), "framesTooLong", 1000);
-  Property<uint32_t>::build(_count, id(), "count", 1000);
 }
 
 void DWM1000_Tag::loop() {
@@ -381,9 +419,9 @@ ENABLE : {
     PT_YIELD_UNTIL(timeout());
     expireAnchors();
     INFO(" interr : %d blinks : %d polls : %d resps : %d finals :%d",
-         _interrupts, _blinks, _polls, _resps, _finals);
-    INFO(" heap : %d delta1:%d us delta:%d us count : %d ", Sys::getFreeHeap(),
-         _delta1, _delta, _count);
+         _interrupts, _blinksRxd, _pollsTxd, _respsRxd, _finalsTxd);
+    INFO(" heap : %d delta1:%d us delta:%d us count : %d IRQ : %d ",
+         Sys::getFreeHeap(), _delta1, _delta, _count, _irq.read());
     etl::map<uint16_t, RemoteAnchor, 10>::iterator it;
     Str anchorLog(300);
     for (it = anchors.begin(); it != anchors.end(); ++it) {

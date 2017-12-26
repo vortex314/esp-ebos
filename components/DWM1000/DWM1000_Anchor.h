@@ -16,6 +16,8 @@
 
 class DWM1000_Anchor : public Actor, public DWM1000 {
  public:
+  Str _role;
+  Str _shortAddressString;
   uint32_t _count;
   uint32_t _interrupts;
   uint32_t _polls;

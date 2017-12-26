@@ -251,6 +251,7 @@ void DWM1000::createFinalMsg(FinalMsg& finalMsg, RespMsg& respMsg) {
 }
 
 void DWM1000::setShortAddress(uint16_t address) { _shortAddress = address; }
+uint16_t DWM1000::getShortAddress() { return _shortAddress; };
 
 void DWM1000::setLongAddress(uint8_t address[]) {
   memcpy(_longAddress, address, 8);

@@ -56,6 +56,8 @@ class RemoteAnchor {
 
 class DWM1000_Tag : public Actor, public DWM1000 {
  public:
+  Str _role;
+  Str _shortAddressString;
   uint32_t _sys_mask;
   uint32_t _sys_status;
   uint32_t _sys_state;
@@ -65,16 +67,23 @@ class DWM1000_Tag : public Actor, public DWM1000 {
   uint32_t _framesMissed;
   uint32_t _framesUnknown;
   uint32_t _framesTooLong;
+  uint32_t _framesUnexpected;
+  uint32_t _signalUnknown;
+  uint32_t _respUnknown;
   uint32_t _txErrors;
   uint32_t _rxErrors;
 
   static DWM1000_Tag* _tag;
   uint32_t _interrupts;
-  uint32_t _polls;
+  uint32_t _pollsTxd;
+  uint32_t _pollsRxd;
   bool interrupt_detected;
-  uint32_t _resps;
-  uint32_t _blinks;
-  uint32_t _finals;
+  uint32_t _respsTxd;
+  uint32_t _respsRxd;
+  uint32_t _blinksTxd;
+  uint32_t _blinksRxd;
+  uint32_t _finalsTxd;
+  uint32_t _finalsRxd;
   uint32_t _frame_len;
   BlinkMsg _blinkMsg;
   PollMsg _pollMsg;
@@ -103,6 +112,7 @@ class DWM1000_Tag : public Actor, public DWM1000 {
  public:
   DWM1000_Tag(const char* name, SPI&, DigitalIn&, DigitalOut&);
   virtual ~DWM1000_Tag();
+
   void mode(uint32_t m);
   void setup();
   void loop();

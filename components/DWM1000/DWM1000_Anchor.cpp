@@ -102,9 +102,12 @@ DWM1000_Anchor::DWM1000_Anchor(const char* name, SPI& spi, DigitalIn& irq,
                                DigitalOut& reset)
     : Actor(name),
       DWM1000(spi, irq, reset),
+      _role(2),
+      _shortAddressString(5),
       _panAddress(3),
       _irqEvent(100),
       _blinkTimer(3000) {
+  _role = "A";
   _count = 0;
   _interrupts = 0;
   _polls = 0;
@@ -375,6 +378,9 @@ void DWM1000_Anchor::setup() {
 
   eb.onDst(id()).call(this);
   timeout(5000);
+  _shortAddressString.appendHex(getShortAddress());
+  new Prop<Str>(_shortAddressString, id(), "address", 20000);
+  new Prop<Str>(_role, id(), "role", 20000);
   Property<const char*>::build(role, id(), "role", 20000);
   Property<uint32_t>::build(_interrupts, id(), "interrupts", 1000);
   Property<uint32_t>::build(_polls, id(), "polls", 1000);

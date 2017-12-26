@@ -106,6 +106,8 @@ class DWM1000 {
   bool isRespMsg();
   void sendFinalMsg();
   void setShortAddress(uint16_t address);
+  uint16_t getShortAddress();
+  const char* getShortAddressString();
   void setLongAddress(uint8_t address[]);
   static FrameType getFrameType(DwmMsg& msg);
   static FrameType getFrameType(uint8_t fc[]);
